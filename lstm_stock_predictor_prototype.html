@@ -1,0 +1,175 @@
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans)}
+.app{display:grid;grid-template-columns:220px 1fr;min-height:600px;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;background:var(--color-background-primary)}
+.sidebar{background:var(--color-background-secondary);border-right:0.5px solid var(--color-border-tertiary);padding:1.5rem 1rem;display:flex;flex-direction:column;gap:0.5rem}
+.logo{font-size:14px;font-weight:500;color:var(--color-text-primary);margin-bottom:1rem;padding-bottom:1rem;border-bottom:0.5px solid var(--color-border-tertiary)}
+.logo span{display:block;font-size:11px;color:var(--color-text-secondary);font-weight:400;margin-top:2px}
+.nav-item{padding:8px 10px;border-radius:var(--border-radius-md);cursor:pointer;font-size:13px;color:var(--color-text-secondary);display:flex;align-items:center;gap:8px;transition:background 0.15s}
+.nav-item.active{background:var(--color-background-primary);color:var(--color-text-primary);font-weight:500;border:0.5px solid var(--color-border-tertiary)}
+.nav-item:hover:not(.active){background:var(--color-background-primary)}
+.nav-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.dot-green{background:#639922}.dot-blue{background:#185FA5}.dot-amber{background:#BA7517}.dot-gray{background:#888780}
+.main{display:flex;flex-direction:column}
+.topbar{padding:1rem 1.5rem;border-bottom:0.5px solid var(--color-border-tertiary);display:flex;align-items:center;justify-content:space-between}
+.topbar-title{font-size:15px;font-weight:500;color:var(--color-text-primary)}
+.topbar-sub{font-size:12px;color:var(--color-text-secondary);margin-top:2px}
+.badge{font-size:11px;padding:3px 10px;border-radius:var(--border-radius-md);font-weight:500}
+.badge-green{background:#EAF3DE;color:#3B6D11}
+.badge-blue{background:#E6F1FB;color:#185FA5}
+.content{padding:1.25rem 1.5rem;display:flex;flex-direction:column;gap:1rem;flex:1}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric-card{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:0.85rem 1rem}
+.metric-label{font-size:11px;color:var(--color-text-secondary);margin-bottom:4px}
+.metric-value{font-size:22px;font-weight:500;color:var(--color-text-primary)}
+.metric-delta{font-size:11px;margin-top:2px}
+.delta-up{color:#3B6D11}.delta-down{color:#A32D2D}
+.panel{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1rem 1.25rem}
+.panel-title{font-size:13px;font-weight:500;color:var(--color-text-primary);margin-bottom:0.85rem;display:flex;align-items:center;justify-content:space-between}
+.panel-sub{font-size:11px;color:var(--color-text-secondary);font-weight:400}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+.chart-area{position:relative;height:160px;width:100%}
+svg.chart{width:100%;height:100%}
+.predict-box{display:flex;flex-direction:column;gap:0.75rem}
+.predict-input-row{display:flex;gap:8px;align-items:center}
+.predict-input-row label{font-size:12px;color:var(--color-text-secondary);white-space:nowrap}
+.predict-input-row input{flex:1;font-size:13px;padding:6px 10px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-secondary);color:var(--color-text-primary)}
+.predict-btn{width:100%;padding:8px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);font-size:13px;font-weight:500;cursor:pointer;color:var(--color-text-primary);transition:background 0.15s}
+.predict-btn:hover{background:var(--color-background-secondary)}
+.predict-result{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:0.85rem 1rem;text-align:center}
+.predict-result-label{font-size:11px;color:var(--color-text-secondary);margin-bottom:4px}
+.predict-result-value{font-size:28px;font-weight:500;color:var(--color-text-primary)}
+.predict-result-ci{font-size:11px;color:var(--color-text-secondary);margin-top:3px}
+.tag{font-size:11px;padding:2px 8px;border-radius:var(--border-radius-md);background:var(--color-background-secondary);color:var(--color-text-secondary);border:0.5px solid var(--color-border-tertiary)}
+.api-row{font-size:12px;padding:7px 0;border-bottom:0.5px solid var(--color-border-tertiary);display:flex;align-items:center;gap:8px;color:var(--color-text-secondary)}
+.api-row:last-child{border-bottom:none}
+.method{font-size:11px;font-weight:500;padding:2px 7px;border-radius:4px}
+.method-get{background:#EAF3DE;color:#3B6D11}
+.method-post{background:#E6F1FB;color:#185FA5}
+.endpoint{font-family:var(--font-mono);color:var(--color-text-primary)}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#639922;margin-left:auto;flex-shrink:0}
+</style>
+
+<div class="app">
+  <div class="sidebar">
+    <div class="logo">LSTM Predictor <span>NVDA - Semiconductors</span></div>
+    <div class="nav-item active"><span class="nav-dot dot-blue"></span>Dashboard</div>
+    <div class="nav-item"><span class="nav-dot dot-green"></span>Forecast</div>
+    <div class="nav-item"><span class="nav-dot dot-amber"></span>Training</div>
+    <div class="nav-item"><span class="nav-dot dot-gray"></span>Evaluation</div>
+    <div class="nav-item"><span class="nav-dot dot-gray"></span>API Docs</div>
+    <div style="margin-top:auto;padding-top:1rem;border-top:0.5px solid var(--color-border-tertiary)">
+      <div style="font-size:11px;color:var(--color-text-secondary)">Active model</div>
+      <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;margin-top:2px">lstm_nvda.keras</div>
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-top:2px">Phase 4 - v1.0.0</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="topbar-title">Forecast Dashboard</div>
+        <div class="topbar-sub">NVDA - Data: 2018-2024 - Lookback: 60 days</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="tag">yfinance</span>
+        <span class="badge badge-green">API online</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="metric-label">Predicted close</div>
+          <div class="metric-value" id="pred-val">$487.32</div>
+          <div class="metric-delta delta-up" id="pred-delta">+2.14%</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">MAE (validation)</div>
+          <div class="metric-value">3.87</div>
+          <div class="metric-delta" style="color:var(--color-text-secondary)">Mean Abs. Error</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">RMSE</div>
+          <div class="metric-value">5.12</div>
+          <div class="metric-delta" style="color:var(--color-text-secondary)">Root MSE</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">MAPE</div>
+          <div class="metric-value">1.83%</div>
+          <div class="metric-delta" style="color:var(--color-text-secondary)">Percentage error</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Actual vs predicted price <span class="panel-sub badge badge-blue">NVDA</span></div>
+          <div class="chart-area">
+            <svg class="chart" viewBox="0 0 380 150" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="gr1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#185FA5" stop-opacity="0.15"/>
+                  <stop offset="100%" stop-color="#185FA5" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path d="M0,120 C30,110 60,90 90,70 C120,50 140,60 170,45 C200,30 220,55 250,40 C280,25 310,50 340,35 L380,30 L380,150 L0,150Z" fill="url(#gr1)"/>
+              <path d="M0,120 C30,110 60,90 90,70 C120,50 140,60 170,45 C200,30 220,55 250,40 C280,25 310,50 340,35 L380,30" fill="none" stroke="#185FA5" stroke-width="1.5"/>
+              <path d="M0,125 C30,115 60,95 90,78 C120,58 140,65 170,52 C200,38 220,60 250,46 C280,32 310,56 340,42 L380,37" fill="none" stroke="#639922" stroke-width="1.5" stroke-dasharray="4,3"/>
+              <circle cx="380" cy="30" r="3.5" fill="#185FA5"/>
+              <circle cx="380" cy="37" r="3.5" fill="#639922"/>
+            </svg>
+          </div>
+          <div style="display:flex;gap:1rem;margin-top:6px">
+            <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-secondary)"><span style="display:inline-block;width:16px;height:2px;background:#185FA5;border-radius:1px"></span>Actual</div>
+            <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-secondary)"><span style="display:inline-block;width:16px;height:0;border-top:2px dashed #639922"></span>Predicted</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Interactive forecast <span class="panel-sub">next close</span></div>
+          <div class="predict-box">
+            <div class="predict-input-row">
+              <label>Symbol</label>
+              <input type="text" value="NVDA" id="sym-input" style="max-width:80px"/>
+              <label>Window</label>
+              <input type="number" value="60" id="win-input" style="max-width:60px"/>
+            </div>
+            <button class="predict-btn" onclick="runPredict()">Simulate forecast</button>
+            <div class="predict-result">
+              <div class="predict-result-label">Predicted close (T+1)</div>
+              <div class="predict-result-value" id="result-val">$487.32</div>
+              <div class="predict-result-ci" id="result-ci">95% CI: $479.10 - $495.54</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">API endpoints <span class="panel-sub">FastAPI - port 8000</span></div>
+        <div class="api-row"><span class="method method-get">GET</span> <span class="endpoint">/health</span> <span style="margin-left:4px">Model status and version</span><span class="status-dot"></span></div>
+        <div class="api-row"><span class="method method-post">POST</span> <span class="endpoint">/predict</span> <span style="margin-left:4px">Next closing price forecast</span><span class="status-dot"></span></div>
+        <div class="api-row"><span class="method method-get">GET</span> <span class="endpoint">/metrics</span> <span style="margin-left:4px">Prometheus metrics</span><span class="status-dot"></span></div>
+        <div class="api-row"><span class="method method-get">GET</span> <span class="endpoint">/docs</span> <span style="margin-left:4px">Interactive OpenAPI documentation</span><span class="status-dot"></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function runPredict(){
+  const sym = document.getElementById('sym-input').value || 'NVDA';
+  const base = 480 + Math.random() * 40;
+  const val = base.toFixed(2);
+  const low = (base - 8.22).toFixed(2);
+  const high = (base + 8.22).toFixed(2);
+  const prev = 477.10;
+  const delta = ((base - prev) / prev * 100).toFixed(2);
+  const up = base > prev;
+  document.getElementById('result-val').textContent = `$${val}`;
+  document.getElementById('result-ci').textContent = `95% CI: $${low} - $${high}`;
+  document.getElementById('pred-val').textContent = `$${val}`;
+  const d = document.getElementById('pred-delta');
+  d.textContent = `${up ? '+' : ''}${delta}%`;
+  d.className = 'metric-delta ' + (up ? 'delta-up' : 'delta-down');
+}
+</script>
