@@ -61,6 +61,7 @@ src/infrastructure/
 │   └── news_repository.py           # Raw news fetching (API + scraper)
 ├── storage/
 │   ├── local_raw_store.py           # Persists raw files under data/raw
+│   ├── local_processed_store.py     # Persists refined parquet files under data/processed
 │   └── s3_raw_store.py              # Uploads raw files and manifests to S3 in parquet
 ├── cache/
 │   └── prediction_cache.py          # In-memory TTL cache (5 min)
@@ -105,7 +106,8 @@ src/application/
     ├── predictor_service.py         # Core LSTM inference
     ├── enriched_predictor_service.py # LSTM + sentiment fusion  [NEW]
     ├── news_aggregator_service.py   # Multi-source news fusion  [NEW]
-    └── data_pipeline_service.py     # Full preprocessing pipeline
+    ├── data_pipeline_service.py      # Full preprocessing pipeline
+    └── refined_data_pipeline_service.py # Raw-to-refined preprocessing pipeline
 ```
 
 ### 4. API Layer

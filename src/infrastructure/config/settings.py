@@ -80,3 +80,38 @@ class RawPipelineSettings:
     @property
     def s3_enabled(self) -> bool:
         return bool(self.s3_bucket_raw)
+
+
+@dataclass(frozen=True)
+class RefinedPipelineSettings:
+    local_raw_dir: Path
+    local_processed_dir: Path
+    s3_bucket_refined: str | None
+    s3_refined_prefix: str
+    aws_region: str | None
+    aws_endpoint_url: str | None
+
+    @classmethod
+    def from_env(cls) -> "RefinedPipelineSettings":
+        load_env_file()
+
+        return cls(
+            local_raw_dir=_resolve_project_path(
+                os.getenv("RAW_LOCAL_DIR", "data/raw")
+            ),
+            local_processed_dir=_resolve_project_path(
+                os.getenv("PROCESSED_LOCAL_DIR", "data/processed")
+            ),
+            s3_bucket_refined=(
+                os.getenv("S3_BUCKET_REFINED") or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_refined_prefix=_normalize_s3_prefix(
+                os.getenv("S3_REFINED_PREFIX", "refined")
+            ),
+            aws_region=os.getenv("AWS_REGION"),
+            aws_endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+        )
+
+    @property
+    def s3_enabled(self) -> bool:
+        return bool(self.s3_bucket_refined)

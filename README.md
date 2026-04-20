@@ -323,9 +323,12 @@ Configure at least the model paths. News credentials are required only for live 
 MODEL_PATH=models/lstm_nvda.keras
 ENRICHED_MODEL_PATH=models/lstm_nvda_enriched.keras
 RAW_LOCAL_DIR=data/raw
+PROCESSED_LOCAL_DIR=data/processed
 AWS_REGION=us-east-1
 S3_BUCKET_RAW=your-raw-bucket-name
 S3_RAW_PREFIX=raw
+S3_BUCKET_REFINED=your-refined-bucket-name
+S3_REFINED_PREFIX=refined
 NEWSAPI_KEY=your_newsapi_key
 ALPHAVANTAGE_KEY=your_alpha_vantage_key
 ```
@@ -360,6 +363,32 @@ data/raw/
 s3://your-raw-bucket-name/raw/
 ├── market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-19/ohlcv.parquet
 └── manifests/extraction_date=2026-04-19/raw_manifest.parquet
+```
+
+### Generate Refined Datasets
+
+Use the refined generator after the raw zone is already available locally. This step applies min-max scaling, creates the sliding windows, and materializes train, validation, and test rows into `data/processed`.
+
+```bash
+# Local refined zone only
+python scripts/generate_refined.py --skip-s3
+
+# Local + S3 upload
+python scripts/generate_refined.py
+```
+
+Refined files are partitioned by source, symbol, lookback, and extraction date:
+
+```text
+data/processed/
+├── refined_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-19/refined.parquet
+└── manifests/extraction_date=2026-04-19/refined_manifest.json
+```
+
+```text
+s3://your-refined-bucket-name/refined/
+├── refined_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-19/refined.parquet
+└── manifests/extraction_date=2026-04-19/refined_manifest.parquet
 ```
 
 ### Option B - Docker (recommended)
