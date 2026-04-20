@@ -12,7 +12,7 @@
 
 > End-to-end deep learning solution for semiconductor stock forecasting with LSTM models, multi-asset context, and optional news sentiment enrichment.
 
-**Primary asset:** `NVDA` · **Multi-asset coverage:** `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` · **Period:** 2018-2024
+**Primary asset:** `NVDA` · **Multi-asset coverage:** `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` · **Period:** 2018-2025
 
 </div>
 
@@ -66,7 +66,7 @@ The semiconductor sector was selected based on three criteria:
 |---|---|
 | Primary asset | NVDA - NVIDIA Corporation (NASDAQ) |
 | Multi-asset universe | `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` |
-| Historical window | 2018-01-01 -> 2024-12-31 |
+| Historical window | 2018-01-01 -> 2025-12-31 |
 | Prediction target | Next-day closing price (D+1) |
 | Data sources | Yahoo Finance via `yfinance` and live news feeds for enrichment |
 | Prediction modes | `standard` and `sentiment-enriched` |
@@ -299,6 +299,10 @@ Configure at least the model paths. News credentials are required only for live 
 ```env
 MODEL_PATH=models/lstm_nvda.keras
 ENRICHED_MODEL_PATH=models/lstm_nvda_enriched.keras
+RAW_LOCAL_DIR=data/raw
+AWS_REGION=us-east-1
+S3_BUCKET_RAW=your-raw-bucket-name
+S3_RAW_PREFIX=raw
 NEWSAPI_KEY=your_newsapi_key
 ALPHAVANTAGE_KEY=your_alpha_vantage_key
 ```
@@ -308,6 +312,32 @@ Notes:
 - `POST /predict` works with the standard model only
 - `POST /predict/enriched` is the endpoint that uses live or recent news context
 - news ingestion should degrade gracefully when a configured source is unavailable, but coverage will be reduced
+
+### Generate Raw Market Data
+
+Use the raw generator to materialize the historical OHLCV zone locally and optionally mirror it to S3. Local files stay in `csv/json`; S3 objects are written in `.parquet`.
+
+```bash
+# Local raw zone only
+python scripts/generate_raw.py --skip-s3
+
+# Local + S3 upload (requires S3_BUCKET_RAW and AWS credentials)
+python scripts/generate_raw.py
+```
+
+Raw files are partitioned by source, symbol, and extraction date:
+
+```text
+data/raw/
+├── market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-19/ohlcv.csv
+└── manifests/extraction_date=2026-04-19/raw_manifest.json
+```
+
+```text
+s3://your-raw-bucket-name/raw/
+├── market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-19/ohlcv.parquet
+└── manifests/extraction_date=2026-04-19/raw_manifest.parquet
+```
 
 ### Option B - Docker (recommended)
 
@@ -342,7 +372,7 @@ import yfinance as yf
 
 SYMBOLS = ["NVDA", "AMD", "TSM", "ASML", "QCOM"]
 START_DATE = "2018-01-01"
-END_DATE = "2024-12-31"
+END_DATE = "2025-12-31"
 
 assets = {
     symbol: yf.download(symbol, start=START_DATE, end=END_DATE)[["Close"]].dropna()

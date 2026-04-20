@@ -1,45 +1,44 @@
 """
-Script didatico para testar IBM Quantum com um experimento minimo.
+Tutorial script for testing IBM Quantum with a minimal experiment.
 
-Objetivo
---------
-1. Rodar localmente primeiro, usando um fake backend da IBM.
-2. Reaproveitar quase o mesmo codigo para rodar em hardware real.
-3. Mostrar os conceitos principais do fluxo do Qiskit Runtime:
-   - circuito quantico
+Goal
+----
+1. Run locally first by using an IBM fake backend.
+2. Reuse almost the same code to run on real hardware.
+3. Show the main concepts in the Qiskit Runtime flow:
+   - quantum circuit
    - transpilation / ISA circuit
    - backend
-   - primitive SamplerV2
+   - SamplerV2 primitive
    - job mode
-   - leitura de resultados
+   - result inspection
 
-Como usar
----------
-1) Instale as dependencias:
+How to use
+----------
+1) Install the dependencies:
    pip install "qiskit[all]~=2.3.1" "qiskit-ibm-runtime~=0.45.1" "qiskit-aer~=0.17"
 
-2) Teste local:
+2) Run a local test:
    python scripts/teste_ibm_quantum.py --modo local
 
-3) Listar backends reais disponiveis na sua conta:
+3) List real backends available to your account:
    python scripts/teste_ibm_quantum.py --modo cloud --listar-backends
 
-4) Criar ou atualizar o arquivo .env na raiz do projeto:
-   IBM_QUANTUM_API_TOKEN=SEU_TOKEN
-   IBM_QUANTUM_INSTANCE=SUA_INSTANCE_OU_CRN
+4) Create or update the `.env` file at the project root:
+   IBM_QUANTUM_API_TOKEN=YOUR_TOKEN
+   IBM_QUANTUM_INSTANCE=YOUR_INSTANCE_OR_CRN
 
-5) Rodar em hardware real:
+5) Run on real hardware:
    python scripts/teste_ibm_quantum.py --modo cloud --backend ibm_brisbane
 
-Observacoes importantes
------------------------
-- Este script usa "job mode", que e compativel com Open Plan.
-- Nao usamos Session porque a documentacao oficial informa que Open Plan
-  nao aceita session jobs.
-- Em modo local, o script usa FakeManilaV2 para simular um backend IBM.
-- O experimento escolhido e um Bell state, porque ele e pequeno e mostra
-  entanglement de forma clara: o esperado e aparecerem mais os estados
-  "00" e "11".
+Important notes
+---------------
+- This script uses job mode, which is compatible with Open Plan.
+- It does not use Session because the official documentation states that
+  Open Plan does not accept session jobs.
+- In local mode, the script uses FakeManilaV2 to simulate an IBM backend.
+- The chosen experiment is a Bell state because it is small and clearly shows
+  entanglement: the expected dominant states are "00" and "11".
 """
 
 from __future__ import annotations
@@ -58,11 +57,11 @@ try:
     from qiskit_ibm_runtime import QiskitRuntimeService
     from qiskit_ibm_runtime import SamplerV2 as Sampler
     from qiskit_ibm_runtime.fake_provider import FakeManilaV2
-except ImportError as exc:  # pragma: no cover - mensagem amigavel para setup manual
+except ImportError as exc:  # pragma: no cover - friendly setup message
     raise SystemExit(
-        "Dependencias ausentes. Instale com:\n"
+        "Missing dependencies. Install them with:\n"
         'pip install "qiskit[all]~=2.3.1" "qiskit-ibm-runtime~=0.45.1" "qiskit-aer~=0.17"\n'
-        f"\nDetalhe tecnico: {exc}"
+        f"\nTechnical details: {exc}"
     )
 
 
@@ -83,7 +82,7 @@ class ExecucaoConfig:
 
 def limpar_valor_env(valor: str) -> str:
     """
-    Remove aspas ao redor do valor quando o .env usa strings entre aspas.
+    Remove wrapping quotes when the `.env` file stores quoted strings.
     """
     valor = valor.strip()
     if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in {"'", '"'}:
@@ -93,12 +92,12 @@ def limpar_valor_env(valor: str) -> str:
 
 def carregar_env_arquivo(caminho_env: Path = DEFAULT_ENV_PATH) -> bool:
     """
-    Carrega um .env simples usando apenas a biblioteca padrao.
+    Load a simple `.env` file by using only the standard library.
 
-    Regras:
-    - ignora comentarios e linhas vazias
-    - aceita prefixo opcional "export "
-    - nao sobrescreve variaveis ja definidas no ambiente
+    Rules:
+    - ignore comments and empty lines
+    - accept an optional `export ` prefix
+    - do not overwrite environment variables that are already defined
     """
     if not caminho_env.exists():
         return False
@@ -128,40 +127,40 @@ def carregar_env_arquivo(caminho_env: Path = DEFAULT_ENV_PATH) -> bool:
 
 def parse_args() -> ExecucaoConfig:
     parser = argparse.ArgumentParser(
-        description="Teste minimo e comentado para IBM Quantum."
+        description="Minimal IBM Quantum test script with explanatory output."
     )
     parser.add_argument(
         "--modo",
         choices=("local", "cloud"),
         default="local",
-        help="local usa fake backend; cloud usa IBM Quantum Runtime.",
+        help="local uses a fake backend; cloud uses IBM Quantum Runtime.",
     )
     parser.add_argument(
         "--backend",
         dest="backend_nome",
         default=None,
         help=(
-            "Nome do backend real no modo cloud. "
-            "Se omitido, o script tenta escolher o least_busy automaticamente."
+            "Real backend name for cloud mode. "
+            "If omitted, the script tries to choose the least_busy backend automatically."
         ),
     )
     parser.add_argument(
         "--shots",
         type=int,
         default=DEFAULT_SHOTS,
-        help="Numero de amostragens da primitive SamplerV2.",
+        help="Number of shots for the SamplerV2 primitive.",
     )
     parser.add_argument(
         "--optimization-level",
         type=int,
         default=DEFAULT_OPT_LEVEL,
         choices=(0, 1, 2, 3),
-        help="Nivel de otimizacao da transpilation.",
+        help="Transpilation optimization level.",
     )
     parser.add_argument(
         "--listar-backends",
         action="store_true",
-        help="No modo cloud, lista alguns backends reais acessiveis e encerra.",
+        help="In cloud mode, list a few accessible real backends and exit.",
     )
     args = parser.parse_args()
     return ExecucaoConfig(
@@ -175,12 +174,12 @@ def parse_args() -> ExecucaoConfig:
 
 def construir_circuito_bell() -> QuantumCircuit:
     """
-    Cria um circuito de Bell.
+    Build a Bell circuit.
 
-    Conceito:
-    - H no qubit 0 cria superposicao.
-    - CX entre q0 e q1 cria entanglement.
-    - measure_all adiciona registradores classicos e mede os qubits.
+    Concept:
+    - H on qubit 0 creates superposition.
+    - CX between q0 and q1 creates entanglement.
+    - measure_all adds classical registers and measures the qubits.
     """
     circuito = QuantumCircuit(2)
     circuito.h(0)
@@ -191,11 +190,11 @@ def construir_circuito_bell() -> QuantumCircuit:
 
 def extrair_counts(pub_result: Any) -> dict[str, int]:
     """
-    Tenta encontrar o BitArray de medicao e converte para contagem por bitstring.
+    Find the measurement BitArray and convert it into bitstring counts.
 
-    Em muitos exemplos da documentacao, quando usamos measure_all(),
-    o nome do registrador classico padrao e "meas". Ainda assim, este helper
-    percorre os campos disponiveis para ficar mais robusto.
+    In many examples from the documentation, when `measure_all()` is used,
+    the default classical register name is `meas`. This helper still scans the
+    available fields to make the lookup more robust.
     """
     data = pub_result.data
 
@@ -210,12 +209,12 @@ def extrair_counts(pub_result: Any) -> dict[str, int]:
             return dict(attr_value.get_counts())
 
     raise RuntimeError(
-        "Nao foi possivel localizar um registrador classico com get_counts() no resultado."
+        "Could not locate a classical register with get_counts() in the result."
     )
 
 
 def imprimir_counts(counts: dict[str, int], shots: int) -> None:
-    print("\nResultados (counts):")
+    print("\nResults (counts):")
     for bitstring, total in sorted(counts.items(), key=lambda item: item[1], reverse=True):
         percentual = (total / shots) * 100
         print(f"  {bitstring}: {total} shots ({percentual:.2f}%)")
@@ -223,16 +222,16 @@ def imprimir_counts(counts: dict[str, int], shots: int) -> None:
 
 def construir_servico_cloud() -> QiskitRuntimeService:
     """
-    Inicializa o service do IBM Quantum Runtime.
+    Initialize the IBM Quantum Runtime service.
 
-    Regras adotadas aqui:
-    - Primeiro o script tenta ler credenciais do arquivo .env.
-    - Se houver token no ambiente, o script instancia explicitamente o service.
-    - Se nao houver token no ambiente, tenta usar credenciais previamente salvas.
+    Rules used here:
+    - First, the script tries to load credentials from the `.env` file.
+    - If a token is available in the environment, it instantiates the service explicitly.
+    - If no token is available, it tries previously saved credentials.
 
-    Variaveis de ambiente esperadas por este script:
+    Environment variables expected by this script:
     - IBM_QUANTUM_API_TOKEN
-    - IBM_QUANTUM_INSTANCE (recomendado pela documentacao oficial)
+    - IBM_QUANTUM_INSTANCE (recommended by the official documentation)
     """
     carregar_env_arquivo()
 
@@ -256,10 +255,10 @@ def escolher_backend_cloud(
     backend_nome: str | None,
 ):
     """
-    Escolhe o backend real.
+    Choose the real backend.
 
-    Se o usuario informar --backend, respeitamos o nome.
-    Caso contrario, usamos least_busy para buscar um backend operacional.
+    If the user provides `--backend`, use that backend name.
+    Otherwise, use `least_busy` to find an operational backend.
     """
     if backend_nome:
         return service.backend(backend_nome)
@@ -270,33 +269,33 @@ def escolher_backend_cloud(
 def listar_backends_cloud(service: QiskitRuntimeService) -> None:
     backends = service.backends(operational=True, simulator=False)
     if not backends:
-        print("Nenhum backend real encontrado para a conta atual.")
+        print("No real backend was found for the current account.")
         return
 
-    print("Backends reais acessiveis:")
+    print("Accessible real backends:")
     for backend in backends[:15]:
         nome = getattr(backend, "name", str(backend))
-        qubits = getattr(backend, "num_qubits", "desconhecido")
+        qubits = getattr(backend, "num_qubits", "unknown")
         status = "operational"
         print(f"  - {nome} | qubits={qubits} | status={status}")
 
 
 def executar_local(config: ExecucaoConfig) -> None:
-    print("Modo selecionado: local")
-    print("Contexto: usando FakeManilaV2 para validar o fluxo antes da QPU real.")
+    print("Selected mode: local")
+    print("Context: using FakeManilaV2 to validate the flow before the real QPU.")
 
     circuito = construir_circuito_bell()
     backend = FakeManilaV2()
 
-    print(f"Backend local: {backend.name}")
-    print("Etapa: transpilation para adequar o circuito ao backend escolhido.")
+    print(f"Local backend: {backend.name}")
+    print("Step: transpilation to adapt the circuit to the selected backend.")
     pass_manager = generate_preset_pass_manager(
         backend=backend,
         optimization_level=config.optimization_level,
     )
     isa_circuito = pass_manager.run(circuito)
 
-    print("Etapa: execucao com SamplerV2 em job mode.")
+    print("Step: execution with SamplerV2 in job mode.")
     sampler = Sampler(
         mode=backend,
         options={"simulator": {"seed_simulator": 42}},
@@ -305,26 +304,26 @@ def executar_local(config: ExecucaoConfig) -> None:
     result = job.result()
     counts = extrair_counts(result[0])
 
-    print("Leitura final: os estados dominantes devem tender a 00 e 11.")
+    print("Final check: the dominant states should tend toward 00 and 11.")
     imprimir_counts(counts, config.shots)
 
 
 def executar_cloud(config: ExecucaoConfig) -> None:
-    print("Modo selecionado: cloud")
-    print("Contexto: usando IBM Quantum Runtime com SamplerV2 em job mode.")
+    print("Selected mode: cloud")
+    print("Context: using IBM Quantum Runtime with SamplerV2 in job mode.")
     if DEFAULT_ENV_PATH.exists():
-        print(f"Arquivo .env detectado: {DEFAULT_ENV_PATH}")
+        print(f".env file detected: {DEFAULT_ENV_PATH}")
     else:
-        print("Arquivo .env nao encontrado; o script tentara usar credenciais ja salvas.")
+        print(".env file not found; the script will try to use previously saved credentials.")
 
     try:
         service = construir_servico_cloud()
     except Exception as exc:
         raise SystemExit(
-            "Nao foi possivel autenticar no IBM Quantum Runtime.\n"
-            "Defina IBM_QUANTUM_API_TOKEN e, de preferencia, IBM_QUANTUM_INSTANCE no .env,\n"
-            "ou salve sua conta com QiskitRuntimeService.save_account(...).\n"
-            f"\nDetalhe tecnico: {exc}"
+            "Could not authenticate with IBM Quantum Runtime.\n"
+            "Set IBM_QUANTUM_API_TOKEN and preferably IBM_QUANTUM_INSTANCE in `.env`,\n"
+            "or save your account with QiskitRuntimeService.save_account(...).\n"
+            f"\nTechnical details: {exc}"
         )
 
     if config.listar_backends:
@@ -334,27 +333,27 @@ def executar_cloud(config: ExecucaoConfig) -> None:
     backend = escolher_backend_cloud(service, config.backend_nome)
     backend_nome = getattr(backend, "name", str(backend))
 
-    print(f"Backend real escolhido: {backend_nome}")
-    print("Etapa: montar o Bell circuit.")
+    print(f"Selected real backend: {backend_nome}")
+    print("Step: build the Bell circuit.")
     circuito = construir_circuito_bell()
 
-    print("Etapa: transpilation local para o ISA circuit do backend real.")
+    print("Step: local transpilation for the real backend ISA circuit.")
     pass_manager = generate_preset_pass_manager(
         backend=backend,
         optimization_level=config.optimization_level,
     )
     isa_circuito = pass_manager.run(circuito)
 
-    print("Etapa: envio do job para a IBM Quantum Platform.")
+    print("Step: submit the job to IBM Quantum Platform.")
     sampler = Sampler(mode=backend)
     job = sampler.run([isa_circuito], shots=config.shots)
     print(f"Job ID: {job.job_id()}")
-    print("Aguardando resultado remoto...")
+    print("Waiting for the remote result...")
 
     result = job.result()
     counts = extrair_counts(result[0])
 
-    print("Resultado recebido da plataforma.")
+    print("Result received from the platform.")
     imprimir_counts(counts, config.shots)
 
 

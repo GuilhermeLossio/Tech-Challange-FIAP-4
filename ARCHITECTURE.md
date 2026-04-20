@@ -51,7 +51,7 @@ This project is structured into independent, decoupled layers following **Clean 
 
 ### 1. Infrastructure Layer
 
-Responsible for all communication with the outside world: financial data APIs, trained model persistence, prediction caching, and raw news ingestion.
+Responsible for all communication with the outside world: financial data APIs, trained model persistence, prediction caching, raw news ingestion, and raw market data persistence in the local raw zone plus AWS S3.
 
 ```
 src/infrastructure/
@@ -59,10 +59,13 @@ src/infrastructure/
 │   ├── yfinance_repository.py       # Fetches OHLCV data per asset
 │   ├── model_repository.py          # Loads/saves .keras models
 │   └── news_repository.py           # Raw news fetching (API + scraper)
+├── storage/
+│   ├── local_raw_store.py           # Persists raw files under data/raw
+│   └── s3_raw_store.py              # Uploads raw files and manifests to S3 in parquet
 ├── cache/
 │   └── prediction_cache.py          # In-memory TTL cache (5 min)
 └── config/
-    └── settings.py                  # Pydantic-settings env config
+    └── settings.py                  # Environment configuration for raw/S3 settings
 ```
 
 ### 2. Domain Layer
@@ -158,7 +161,7 @@ Movements in ASML and TSM often lead NVDA/AMD/QCOM by days or weeks — a causal
 ```python
 SYMBOLS = ["NVDA", "AMD", "TSM", "ASML", "QCOM"]
 START_DATE = "2018-01-01"
-END_DATE   = "2024-12-31"
+END_DATE   = "2025-12-31"
 
 def fetch_all(symbols: list[str]) -> dict[str, pd.DataFrame]:
     return {
