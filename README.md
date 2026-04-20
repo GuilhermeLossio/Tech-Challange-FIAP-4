@@ -161,102 +161,125 @@ The system follows a **Clean Architecture** core with a dedicated **News Intelli
 | GitHub Actions | CI/CD pipeline |
 | pre-commit | Local quality gates |
 
----
-
-## 📁 Folder Structure
+## 📁 Estrutura completa
 
 ```text
 tech-challenge-phase4/
-|
-+-- .github/
-|   \-- workflows/
-|       \-- ci.yml
-|
-+-- data/
-|   +-- raw/
-|   \-- processed/
-|
-+-- notebooks/
-|   +-- 01_data_collection.ipynb
-|   +-- 02_preprocessing.ipynb
-|   +-- 03_lstm_training.ipynb
-|   \-- 04_model_evaluation.ipynb
-|
-+-- src/
-|   +-- domain/
-|   |   +-- entities/
-|   |   |   +-- stock.py
-|   |   |   +-- prediction.py
-|   |   |   \-- news_signal.py
-|   |   \-- interfaces/
-|   |       +-- i_stock_repository.py
-|   |       +-- i_model.py
-|   |       +-- i_scaler.py
-|   |       +-- i_news_repository.py
-|   |       \-- i_sentiment_analyzer.py
-|   |
-|   +-- infrastructure/
-|   |   +-- repositories/
-|   |   |   +-- yfinance_repository.py
-|   |   |   +-- model_repository.py
-|   |   |   \-- news_repository.py
-|   |   +-- nlp/
-|   |   |   \-- finbert_analyzer.py
-|   |   \-- config/
-|   |       \-- settings.py
-|   |
-|   +-- application/
-|   |   +-- use_cases/
-|   |   |   +-- predict_closing_price.py
-|   |   |   +-- predict_with_sentiment.py
-|   |   |   +-- train_model.py
-|   |   |   \-- evaluate_model.py
-|   |   \-- services/
-|   |       +-- predictor_service.py
-|   |       +-- enriched_predictor_service.py
-|   |       \-- news_aggregator_service.py
-|   |
-|   \-- api/
-|       +-- main.py
-|       +-- routes/
-|       |   +-- predict.py
-|       |   +-- predict_enriched.py
-|       |   +-- news.py
-|       |   +-- health.py
-|       |   \-- metrics.py
-|       \-- schemas/
-|           +-- predict_request.py
-|           +-- predict_response.py
-|           +-- enriched_predict_request.py
-|           \-- news_response.py
-|
-+-- models/
-|   +-- lstm_nvda.keras
-|   \-- lstm_nvda_enriched.keras
-|
-+-- monitoring/
-|   +-- prometheus.yml
-|   \-- grafana/
-|       \-- dashboard.json
-|
-+-- tests/
-|   +-- unit/
-|   |   +-- test_preprocessor.py
-|   |   +-- test_predictor_service.py
-|   |   \-- test_sentiment.py
-|   +-- integration/
-|   |   \-- test_predict_endpoint.py
-|   \-- test_model.py
-|
-+-- docker/
-|   +-- Dockerfile
-|   \-- docker-compose.yml
-|
-+-- requirements.txt
-+-- requirements-dev.txt
-+-- .env.example
-+-- ARCHITECTURE.md
-\-- README.md
+│
+├── 📁 .github/
+│   └── workflows/
+│       └── ci.yml
+│
+├── 📁 data/
+│   ├── raw/
+│   └── processed/
+│
+├── 📁 docs/                            
+│   ├── ARCHITECTURE.md 
+│   └── adr/ 
+│       ├── 001-lstm-vs-transformer.md
+│       └── 002-finbert-sentiment.md
+│
+├── 📓 notebooks/
+│   ├── 01_data_collection.ipynb
+│   ├── 02_preprocessing.ipynb
+│   ├── 03_lstm_training.ipynb
+│   └── 04_model_evaluation.ipynb
+│
+├── 📁 src/
+│   ├── 🔵 domain/
+│   │   ├── entities/
+│   │   │   ├── stock.py
+│   │   │   ├── prediction.py
+│   │   │   └── news_signal.py
+│   │   ├── value_objects/             
+│   │   │   ├── ticker.py
+│   │   │   ├── price.py
+│   │   │   └── sentiment_score.py
+│   │   ├── interfaces/
+│   │   │   ├── i_stock_repository.py
+│   │   │   ├── i_model.py
+│   │   │   ├── i_scaler.py
+│   │   │   ├── i_news_repository.py
+│   │   │   └── i_sentiment_analyzer.py
+│   │   ├── exceptions.py              
+│   │   └── __init__.py
+│   │
+│   ├── 🟠 infrastructure/
+│   │   ├── repositories/
+│   │   │   ├── yfinance_repository.py
+│   │   │   ├── model_repository.py
+│   │   │   └── news_repository.py
+│   │   ├── nlp/
+│   │   │   └── finbert_analyzer.py
+│   │   ├── ml/
+│   │   │   ├── lstm_model.py
+│   │   │   └── scaler.py
+│   │   ├── config/
+│   │   │   └── settings.py
+│   │   └── __init__.py
+│   │
+│   ├── 🟢 application/
+│   │   ├── use_cases/
+│   │   │   ├── predict_closing_price.py
+│   │   │   ├── predict_with_sentiment.py
+│   │   │   ├── train_model.py
+│   │   │   └── evaluate_model.py
+│   │   ├── services/
+│   │   │   ├── predictor_service.py
+│   │   │   ├── enriched_predictor_service.py
+│   │   │   └── news_aggregator_service.py
+│   │   ├── mappers/                   
+│   │   │   ├── prediction_mapper.py
+│   │   │   └── news_mapper.py
+│   │   └── __init__.py
+│   │
+│   └── 🟣 api/
+│       ├── main.py
+│       ├── dependencies.py            
+│       ├── routes/
+│       │   ├── predict.py
+│       │   ├── predict_enriched.py
+│       │   ├── news.py
+│       │   ├── health.py
+│       │   └── metrics.py
+│       └── dtos/
+│           ├── predict_request.py
+│           ├── predict_response.py
+│           ├── enriched_predict_request.py
+│           └── news_response.py
+│
+├── 📁 models/
+│   ├── lstm_nvda.keras
+│   ├── lstm_nvda_enriched.keras
+│   └── .gitignore                     
+│
+├── 📊 monitoring/
+│   ├── prometheus.yml
+│   └── grafana/
+│       └── dashboard.json
+│
+├── 🧪 tests/
+│   ├── unit/
+│   │   ├── test_preprocessor.py
+│   │   ├── test_predictor_service.py
+│   │   ├── test_sentiment.py
+│   │   └── test_model_training.py
+│   ├── integration/
+│   │   └── test_predict_endpoint.py
+│   └── e2e/                           
+│       └── test_api_full_flow.py
+│
+├── 🐳 docker/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+│
+├── pyproject.toml
+├── requirements.txt
+├── requirements-dev.txt
+├── Makefile
+├── .env.example
+└── README.md
 ```
 
 ---
