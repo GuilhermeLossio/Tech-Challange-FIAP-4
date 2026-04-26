@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -9,6 +10,7 @@ from src.domain.interfaces.i_stock_repository import IStockRepository
 
 class YFinanceRepository(IStockRepository):
     source_name = "yfinance"
+    _cache_dir = Path(__file__).resolve().parents[3] / ".cache" / "py-yfinance"
 
     def fetch(self, symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
         try:
@@ -21,6 +23,8 @@ class YFinanceRepository(IStockRepository):
 
         if end_date < start_date:
             raise ValueError("end_date must be greater than or equal to start_date")
+
+        yf.set_tz_cache_location(str(self._cache_dir))
 
         # Yahoo treats `end` as exclusive, so add one day to keep the requested date.
         frame = yf.download(

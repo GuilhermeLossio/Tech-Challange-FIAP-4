@@ -115,3 +115,55 @@ class RefinedPipelineSettings:
     @property
     def s3_enabled(self) -> bool:
         return bool(self.s3_bucket_refined)
+
+
+@dataclass(frozen=True)
+class TrainingPipelineSettings:
+    local_processed_dir: Path
+    local_models_dir: Path
+    s3_bucket_processed: str | None
+    s3_processed_prefix: str
+    s3_bucket_model: str | None
+    s3_model_prefix: str
+    aws_region: str | None
+    aws_endpoint_url: str | None
+
+    @classmethod
+    def from_env(cls) -> "TrainingPipelineSettings":
+        load_env_file()
+
+        return cls(
+            local_processed_dir=_resolve_project_path(
+                os.getenv("PROCESSED_LOCAL_DIR", "data/processed")
+            ),
+            local_models_dir=_resolve_project_path(
+                os.getenv("MODELS_DIR", "models")
+            ),
+            s3_bucket_processed=(
+                os.getenv("S3_BUCKET_PROCESSED")
+                or os.getenv("S3_BUCKET_REFINED")
+                or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_processed_prefix=_normalize_s3_prefix(
+                os.getenv("S3_PROCESSED_PREFIX", "processed")
+            ),
+            s3_bucket_model=(
+                os.getenv("S3_BUCKET_MODEL")
+                or os.getenv("S3_BUCKET_PROCESSED")
+                or os.getenv("S3_BUCKET_REFINED")
+                or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_model_prefix=_normalize_s3_prefix(
+                os.getenv("S3_MODEL_PREFIX", "model")
+            ),
+            aws_region=os.getenv("AWS_REGION"),
+            aws_endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+        )
+
+    @property
+    def processed_s3_enabled(self) -> bool:
+        return bool(self.s3_bucket_processed)
+
+    @property
+    def model_s3_enabled(self) -> bool:
+        return bool(self.s3_bucket_model)

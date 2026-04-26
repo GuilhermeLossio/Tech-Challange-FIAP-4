@@ -12,7 +12,7 @@
 
 > End-to-end deep learning solution for semiconductor stock forecasting with LSTM models, multi-asset context, and optional news sentiment enrichment.
 
-**Primary asset:** `NVDA` · **Multi-asset coverage:** `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` · **Period:** 2018-2025
+**Primary asset:** `NVDA` · **Multi-asset coverage:** `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` · **Period:** 2000 -> last completed fiscal year
 
 </div>
 
@@ -66,7 +66,7 @@ The semiconductor sector was selected based on three criteria:
 |---|---|
 | Primary asset | NVDA - NVIDIA Corporation (NASDAQ) |
 | Multi-asset universe | `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` |
-| Historical window | 2018-01-01 -> 2025-12-31 |
+| Historical window | 2000-01-01 -> last completed fiscal year end (for example, 2025-12-31 when collected during 2026) |
 | Prediction target | Next-day closing price (D+1) |
 | Data sources | Yahoo Finance via `yfinance` and live news feeds for enrichment |
 | Prediction modes | `standard` and `sentiment-enriched` |
@@ -343,6 +343,8 @@ Notes:
 
 Use the raw generator to materialize the historical OHLCV zone locally and optionally mirror it to S3. Local files stay in `csv/json`; S3 objects are written in `.parquet`.
 
+By default, `scripts/generate_raw.py` collects data from `2000-01-01` through December 31 of the last completed fiscal year. This keeps the default extraction window aligned with a fully closed fiscal year while still allowing explicit `--start-date` and `--end-date` overrides.
+
 ```bash
 # Local raw zone only
 python scripts/generate_raw.py --skip-s3
@@ -391,6 +393,70 @@ s3://your-refined-bucket-name/refined/
 └── manifests/extraction_date=2026-04-19/refined_manifest.parquet
 ```
 
+### Generate Feature Datasets
+
+Use the feature generator after the refined zone is available. This step derives engineered statistics for each rolling window and stores them in the processed zone. Training scripts automatically prefer feature datasets when they exist for the same extraction date.
+
+```bash
+# Local feature zone only
+python scripts/generate_features.py --skip-s3
+
+# Local + S3 upload
+python scripts/generate_features.py
+```
+
+Feature files are partitioned by source, symbol, lookback, and extraction date:
+
+```text
+data/processed/
+├── feature_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-22/features.parquet
+└── manifests/extraction_date=2026-04-22/feature_manifest.json
+```
+
+```text
+s3://your-processed-bucket-name/processed/
+├── feature_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-22/features.parquet
+└── manifests/extraction_date=2026-04-22/feature_manifest.json
+```
+
+### Train the Baseline Keras Model
+
+Once refined or feature datasets exist, train the classical baseline from the latest available extraction date or pin a specific partition explicitly.
+
+```bash
+# Latest available extraction date
+python scripts/train_keras.py --skip-s3
+
+# Specific extraction date and multiple symbols
+python scripts/train_keras.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --verbose 0
+```
+
+The script stores model artifacts in `models/` and writes a manifest under `models/manifests/extraction_date=<date>/trained_at=<utc_timestamp>/keras_training_manifest.json`.
+
+### Compare Classical and Quantum Training Paths
+
+Use the comparison runner to execute the classical Keras baseline and the hybrid quantum workflow in one pass, then generate a dashboard, confusion matrices, and a markdown report for each symbol.
+
+```bash
+# Local quantum simulation (default)
+python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --skip-s3
+
+# IBM Quantum Runtime
+python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantum-mode cloud --quantum-backend <backend-name> --skip-s3
+```
+
+Comparison artifacts are stored under:
+
+```text
+models/
+└── comparison_runs/extraction_date=<date>/generated_at=<utc_timestamp>/
+    ├── comparison_manifest.json
+    └── symbol=<ticker>/
+        ├── comparison_report.md
+        ├── comparison_dashboard.png
+        └── comparison_confusion_matrices.png
+```
+
 ### Option B - Docker (recommended)
 
 ```bash
@@ -420,11 +486,12 @@ docker-compose logs -f api
 ### 1. Multi-Asset Collection
 
 ```python
+from datetime import date
 import yfinance as yf
 
 SYMBOLS = ["NVDA", "AMD", "TSM", "ASML", "QCOM"]
-START_DATE = "2018-01-01"
-END_DATE = "2025-12-31"
+START_DATE = "2000-01-01"
+END_DATE = date(date.today().year - 1, 12, 31).isoformat()
 
 assets = {
     symbol: yf.download(symbol, start=START_DATE, end=END_DATE)[["Close"]].dropna()
@@ -597,6 +664,9 @@ For the current project scope, the relevant comparison is:
 - **Baseline vs enriched model**
 - **Validation vs test split**
 - **Price-only vs price-plus-sentiment input**
+- **Classical Keras price regression vs hybrid quantum directional classification**
+
+For a reproducible classical-vs-quantum benchmark, use `scripts/train_and_compare_models.py`. The script trains both paths from the same extraction date and generates a markdown report plus visual assets under `models/comparison_runs/...`.
 
 ---
 

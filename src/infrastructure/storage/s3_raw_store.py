@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
+import mimetypes
 
 import pandas as pd
 
@@ -54,7 +55,22 @@ class S3RawStore:
             Bucket=self._bucket,
             Key=key,
             Body=buffer.getvalue(),
-            ContentType="application/octet-stream",
+            ContentType=self._resolve_content_type(relative_path),
+        )
+        return self.build_uri(key)
+
+    def upload_file(
+        self,
+        *,
+        local_path: Path,
+        relative_path: Path,
+    ) -> str:
+        key = self.build_key(relative_path)
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=local_path.read_bytes(),
+            ContentType=self._resolve_content_type(relative_path),
         )
         return self.build_uri(key)
 
@@ -66,3 +82,18 @@ class S3RawStore:
 
     def build_uri(self, key: str) -> str:
         return f"s3://{self._bucket}/{key}"
+
+    @staticmethod
+    def _resolve_content_type(relative_path: Path) -> str:
+        suffix = relative_path.suffix.lower()
+        if suffix == ".json":
+            return "application/json"
+        if suffix == ".md":
+            return "text/markdown"
+        if suffix == ".csv":
+            return "text/csv"
+        if suffix in {".parquet", ".keras", ".joblib"}:
+            return "application/octet-stream"
+
+        guessed_type, _ = mimetypes.guess_type(relative_path.as_posix())
+        return guessed_type or "application/octet-stream"

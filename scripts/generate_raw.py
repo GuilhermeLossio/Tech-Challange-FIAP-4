@@ -21,6 +21,12 @@ from src.infrastructure.storage.s3_raw_store import S3RawStore  # noqa: E402
 
 
 DEFAULT_SYMBOLS = ("NVDA", "AMD", "TSM", "ASML", "QCOM")
+DEFAULT_START_DATE = "2000-01-01"
+
+
+def default_end_date() -> str:
+    # Use the last fully closed fiscal year as the upper bound for collection.
+    return date(date.today().year - 1, 12, 31).isoformat()
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,13 +41,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--start-date",
-        default="2018-01-01",
+        default=DEFAULT_START_DATE,
         help="Inclusive start date in YYYY-MM-DD format.",
     )
     parser.add_argument(
         "--end-date",
-        default="2025-12-31",
-        help="Inclusive end date in YYYY-MM-DD format.",
+        default=default_end_date(),
+        help=(
+            "Inclusive end date in YYYY-MM-DD format. "
+            "Defaults to December 31 of the last completed fiscal year."
+        ),
     )
     parser.add_argument(
         "--extraction-date",
