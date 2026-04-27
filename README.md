@@ -324,11 +324,16 @@ MODEL_PATH=models/lstm_nvda.keras
 ENRICHED_MODEL_PATH=models/lstm_nvda_enriched.keras
 RAW_LOCAL_DIR=data/raw
 PROCESSED_LOCAL_DIR=data/processed
+S3_BUCKET_PROCESSED=your-processed-bucket-name
+S3_PROCESSED_PREFIX=processed
 AWS_REGION=us-east-1
 S3_BUCKET_RAW=your-raw-bucket-name
 S3_RAW_PREFIX=raw
 S3_BUCKET_REFINED=your-refined-bucket-name
 S3_REFINED_PREFIX=refined
+ATHENA_DATABASE=tech_challenge_phase4
+ATHENA_WORKGROUP=primary
+ATHENA_OUTPUT_S3_URI=s3://your-athena-results-bucket/path/
 NEWSAPI_KEY=your_newsapi_key
 ALPHAVANTAGE_KEY=your_alpha_vantage_key
 ```
@@ -432,6 +437,74 @@ python scripts/train_keras.py --extraction-date 2026-04-22 --symbols NVDA AMD TS
 ```
 
 The script stores model artifacts in `models/` and writes a manifest under `models/manifests/extraction_date=<date>/trained_at=<utc_timestamp>/keras_training_manifest.json`.
+
+### Generate Monthly Forecast Datasets
+
+For practical tests, the safest extension is a **batch forecast dataset** instead of trying to stretch the online `POST /predict` contract. The new generator uses the last observed `lookback` window, applies the trained scaler, and rolls the 1-day LSTM forecast forward recursively for **30 future business days**.
+
+Important: the forecast always starts from the **last date available in the raw zone**. With the default `scripts/generate_raw.py` behavior documented above, that means the horizon starts after the last completed fiscal year end. If you want a more current practical test window, regenerate `raw`, `refined`, and the model with an explicit `--end-date` first.
+
+```bash
+# Local forecast dataset only
+python scripts/generate_forecast.py --skip-s3
+
+# Specific extraction date and symbols
+python scripts/generate_forecast.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --horizon-days 30
+```
+
+The output is intentionally flat, with **one row per symbol per future business day**, so it can be queried directly from Athena and later exposed by an API without reshaping arrays in the query layer.
+
+```text
+data/processed/
+├── forecast_data/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast.parquet
+└── manifests/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast_manifest.json
+```
+
+```text
+s3://your-processed-bucket-name/processed/
+├── forecast_data/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast.parquet
+└── manifests/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast_manifest.json
+```
+
+Recommended Athena-friendly columns include:
+
+- `symbol`
+- `forecast_step`
+- `forecast_date`
+- `predicted_close`
+- `last_observed_date`
+- `last_observed_close`
+- `input_window_end_origin`
+- `observed_points_in_window`
+- `predicted_points_in_window`
+- `generated_at_utc`
+
+This makes it straightforward to serve later endpoints such as `GET /forecasts/{symbol}?as_of=2026-04-22`.
+
+### Provision Athena Catalog
+
+Once the zones are already published to S3, create the Athena database and external tables with:
+
+```bash
+# Review the generated DDL first
+python scripts/provision_athena.py --print-only
+
+# Execute against AWS Athena
+python scripts/provision_athena.py --lookback 60
+```
+
+The script creates:
+
+- `raw_ohlcv`
+- `refined_close_lkb60`
+- `feature_close_lkb60`
+- `forecast_close`
+
+Important:
+
+- `refined_*` and `feature_*` depend on `lookback`, because the parquet schema contains one lag column per timestep.
+- `ATHENA_OUTPUT_S3_URI` is required unless the selected Athena workgroup already has an output location configured.
+- After new partitions land in S3, rerun the script or run `MSCK REPAIR TABLE` for the affected tables.
 
 ### Compare Classical and Quantum Training Paths
 

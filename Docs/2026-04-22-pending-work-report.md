@@ -9,6 +9,8 @@ This report lists what is still missing to match the implementation promised by 
 - Raw market data ingestion exists through `scripts/generate_raw.py`.
 - Refined dataset generation exists through `scripts/generate_refined.py`.
 - Feature dataset generation exists through `scripts/generate_features.py`.
+- Monthly forecast batch generation exists through `scripts/generate_forecast.py`.
+- Athena catalog provisioning exists through `scripts/provision_athena.py`.
 - Classical Keras training exists through `scripts/train_keras.py` and `src/application/use_cases/train_model.py`.
 - Quantum training exists through `scripts/train_model_quantum.py` and `src/application/use_cases/train_model_quantum.py`.
 - Classical-versus-quantum comparison exists through `scripts/train_and_compare_models.py`.

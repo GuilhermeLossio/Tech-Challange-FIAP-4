@@ -167,3 +167,87 @@ class TrainingPipelineSettings:
     @property
     def model_s3_enabled(self) -> bool:
         return bool(self.s3_bucket_model)
+
+
+@dataclass(frozen=True)
+class ForecastPipelineSettings:
+    local_raw_dir: Path
+    local_processed_dir: Path
+    local_models_dir: Path
+    s3_bucket_processed: str | None
+    s3_processed_prefix: str
+    aws_region: str | None
+    aws_endpoint_url: str | None
+
+    @classmethod
+    def from_env(cls) -> "ForecastPipelineSettings":
+        load_env_file()
+
+        return cls(
+            local_raw_dir=_resolve_project_path(
+                os.getenv("RAW_LOCAL_DIR", "data/raw")
+            ),
+            local_processed_dir=_resolve_project_path(
+                os.getenv("PROCESSED_LOCAL_DIR", "data/processed")
+            ),
+            local_models_dir=_resolve_project_path(
+                os.getenv("MODELS_DIR", "models")
+            ),
+            s3_bucket_processed=(
+                os.getenv("S3_BUCKET_PROCESSED")
+                or os.getenv("S3_BUCKET_REFINED")
+                or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_processed_prefix=_normalize_s3_prefix(
+                os.getenv("S3_PROCESSED_PREFIX", "processed")
+            ),
+            aws_region=os.getenv("AWS_REGION"),
+            aws_endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+        )
+
+    @property
+    def processed_s3_enabled(self) -> bool:
+        return bool(self.s3_bucket_processed)
+
+
+@dataclass(frozen=True)
+class AthenaCatalogSettings:
+    aws_region: str | None
+    aws_endpoint_url: str | None
+    s3_bucket_raw: str | None
+    s3_raw_prefix: str
+    s3_bucket_refined: str | None
+    s3_refined_prefix: str
+    s3_bucket_processed: str | None
+    s3_processed_prefix: str
+    athena_database: str
+    athena_workgroup: str
+    athena_output_s3_uri: str | None
+
+    @classmethod
+    def from_env(cls) -> "AthenaCatalogSettings":
+        load_env_file()
+
+        return cls(
+            aws_region=os.getenv("AWS_REGION"),
+            aws_endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+            s3_bucket_raw=os.getenv("S3_BUCKET_RAW"),
+            s3_raw_prefix=_normalize_s3_prefix(os.getenv("S3_RAW_PREFIX", "raw")),
+            s3_bucket_refined=(
+                os.getenv("S3_BUCKET_REFINED") or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_refined_prefix=_normalize_s3_prefix(
+                os.getenv("S3_REFINED_PREFIX", "refined")
+            ),
+            s3_bucket_processed=(
+                os.getenv("S3_BUCKET_PROCESSED")
+                or os.getenv("S3_BUCKET_REFINED")
+                or os.getenv("S3_BUCKET_RAW")
+            ),
+            s3_processed_prefix=_normalize_s3_prefix(
+                os.getenv("S3_PROCESSED_PREFIX", "processed")
+            ),
+            athena_database=os.getenv("ATHENA_DATABASE", "tech_challenge_phase4"),
+            athena_workgroup=os.getenv("ATHENA_WORKGROUP", "primary"),
+            athena_output_s3_uri=os.getenv("ATHENA_OUTPUT_S3_URI"),
+        )

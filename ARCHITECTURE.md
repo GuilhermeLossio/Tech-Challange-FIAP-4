@@ -51,7 +51,7 @@ This project is structured into independent, decoupled layers following **Clean 
 
 ### 1. Infrastructure Layer
 
-Responsible for all communication with the outside world: financial data APIs, trained model persistence, prediction caching, raw news ingestion, and raw market data persistence in the local raw zone plus AWS S3.
+Responsible for all communication with the outside world: financial data APIs, trained model persistence, prediction caching, raw news ingestion, raw market data persistence in the local raw zone plus AWS S3, and forecast batch persistence in Athena-friendly parquet files.
 
 ```
 src/infrastructure/
@@ -93,7 +93,7 @@ src/domain/
 
 ### 3. Application Layer
 
-Orchestrates use cases. Coordinates domain and infrastructure without containing business logic. The `EnrichedPredictorService` merges price sequences with live sentiment scores before inference.
+Orchestrates use cases. Coordinates domain and infrastructure without containing business logic. The `EnrichedPredictorService` merges price sequences with live sentiment scores before inference, while the batch forecast use case materializes recursive 30-business-day outputs for Athena and downstream APIs.
 
 ```
 src/application/
@@ -109,6 +109,18 @@ src/application/
     ├── data_pipeline_service.py      # Full preprocessing pipeline
     └── refined_data_pipeline_service.py # Raw-to-refined preprocessing pipeline
 ```
+
+### Forecast Batch Materialization
+
+For monthly practical tests, the recommended design is to keep forecasts in a dedicated processed-zone dataset instead of appending them to `raw` or `refined`. The batch generator:
+
+- reads the latest raw closing prices from `data/raw`
+- reuses scaler metadata from the refined manifest for the same `extraction_date`
+- resolves the latest trained `lstm_<symbol>.keras` artifact for that partition
+- rolls the 1-step LSTM forward recursively for 30 future business days
+- writes one flat parquet row per forecasted day under `data/processed/forecast_data/...`
+
+This separation keeps historical training lineage immutable while producing a serving-friendly dataset for Athena and future APIs.
 
 ### 4. API Layer
 
