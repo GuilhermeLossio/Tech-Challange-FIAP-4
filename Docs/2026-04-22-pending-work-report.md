@@ -14,21 +14,31 @@ This report lists what is still missing to match the implementation promised by 
 - Classical Keras training exists through `scripts/train_keras.py` and `src/application/use_cases/train_model.py`.
 - Quantum training exists through `scripts/train_model_quantum.py` and `src/application/use_cases/train_model_quantum.py`.
 - Classical-versus-quantum comparison exists through `scripts/train_and_compare_models.py`.
+- A baseline FastAPI layer now exists through `src/api/main.py`, `src/api/routes/`, and `src/api/schemas/`.
+- The API already exposes `GET /health`, `POST /predict`, `GET /forecasts/{symbol}`, `GET /methods`, `GET /data-usage`, and `GET /metrics`.
 - News aggregation logic exists in `src/application/services/news_aggregator_service.py`.
 
 ## Pending Work
 
-### 1. API layer is still missing
+### 1. API layer is only partially implemented
 
-The documentation describes a FastAPI application with `POST /predict`, `POST /predict/enriched`, `GET /health`, `GET /metrics`, and news endpoints. Those files and folders do not exist yet.
+The baseline API now exists, but the full product described by the documentation is not there yet.
 
-Missing paths:
+Already implemented:
 
 - `src/api/main.py`
 - `src/api/routes/`
-- `src/api/schemas/` or DTO equivalents
+- `src/api/schemas/`
 - `src/application/services/predictor_service.py`
+- `POST /predict` using the standard local Keras model only
+- `GET /forecasts/{symbol}` serving materialized `future_predict` rows
+- `GET /methods` and `GET /data-usage` for frontend-friendly explanation endpoints
+
+Still missing in the API layer:
+
 - `src/application/services/enriched_predictor_service.py`
+- true enriched inference behind `/predict/enriched`
+- true news retrieval behind `/news/{symbol}`
 
 ### 2. Sentiment-enriched prediction is not implemented end-to-end
 
@@ -42,7 +52,7 @@ Missing or unfinished items:
 - enriched prediction use case
 - enriched model loading/inference path
 - enriched model artifact `models/lstm_nvda_enriched.keras`
-- `/predict/enriched` and `/news/{symbol}` endpoints
+- production implementations behind `/predict/enriched` and `/news/{symbol}`
 
 ### 3. Multi-asset context is not implemented in training
 

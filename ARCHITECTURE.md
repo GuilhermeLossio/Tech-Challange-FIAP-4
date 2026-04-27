@@ -128,6 +128,17 @@ This separation keeps historical training lineage immutable while producing a se
 
 HTTP interface. Validates inputs, formats outputs, no business logic.
 
+The currently delivered baseline API exposes:
+
+- `GET /health`
+- `POST /predict`
+- `GET /forecasts/{symbol}`
+- `GET /methods`
+- `GET /data-usage`
+- `GET /metrics`
+
+The enriched and news routes remain reserved for a later delivery stage and should not be treated as production-ready.
+
 ```
 src/api/
 ├── main.py                          # FastAPI app factory

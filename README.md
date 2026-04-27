@@ -341,8 +341,10 @@ ALPHAVANTAGE_KEY=your_alpha_vantage_key
 Notes:
 
 - `POST /predict` works with the standard model only
-- `POST /predict/enriched` is the endpoint that uses live or recent news context
-- news ingestion should degrade gracefully when a configured source is unavailable, but coverage will be reduced
+- when `prices` is omitted in `POST /predict`, the API builds the 60-day window automatically from local historical data
+- `GET /forecasts/{symbol}` can serve both `normal` and `quant` predictions from the materialized `future_predict` dataset
+- the API never triggers live quantum inference or IBM Quantum token usage at request time
+- `POST /predict/enriched` and `GET /news/{symbol}` are reserved for a later stage and currently return `501`
 
 ### Generate Raw Market Data
 
@@ -762,7 +764,7 @@ For a reproducible classical-vs-quantum benchmark, use `scripts/train_and_compar
 
 ## 🌐 API Reference
 
-The API is built with **FastAPI** and documented through OpenAPI at `/docs`.
+The API is built with **FastAPI** and documented through OpenAPI at `/docs`. The online serving policy is intentionally strict: live requests use only the baseline Keras LSTM, while quantum outputs are served only when they were precomputed offline into `future_predict`.
 
 ### `GET /health`
 
@@ -780,13 +782,23 @@ Returns service status and loaded model metadata.
 
 ### `POST /predict`
 
-Accepts 60 historical closing prices and returns the next-day forecast using the baseline model.
+Accepts 60 historical closing prices and returns the next-day forecast using the baseline model. When `prices` is omitted, the API builds the 60-day window automatically from the local historical dataset for the requested symbol.
 
 **Request:**
 ```json
 {
   "symbol": "NVDA",
   "prices": [432.10, 435.30, 440.00, "... 60 float values total ..."]
+}
+```
+
+Automatic window mode:
+
+```json
+{
+  "symbol": "NVDA",
+  "extraction_date": "2026-04-27",
+  "reference_date": "2025-12-31"
 }
 ```
 
@@ -800,44 +812,44 @@ Accepts 60 historical closing prices and returns the next-day forecast using the
   "confidence": 0.95,
   "currency": "USD",
   "model": "lstm_nvda",
-  "timestamp": "2024-07-21T14:32:00Z"
+  "timestamp": "2024-07-21T14:32:00Z",
+  "input_mode": "historical_auto_window",
+  "resolved_window_start_date": "2025-10-07",
+  "resolved_window_end_date": "2025-12-31"
 }
 ```
+
+### `GET /forecasts/{symbol}`
+
+Returns the latest materialized future predictions for a supported symbol.
+
+Supported query parameters:
+
+- `predict_type=all|normal|quant`
+- `extraction_date=YYYY-MM-DD`
+- `forecast_date_from=YYYY-MM-DD`
+- `forecast_date_to=YYYY-MM-DD`
+- `lookback=60`
+- `horizon_days=30`
+- `limit=<n>`
+
+The response includes both the full available forecast interval and the filtered interval actually returned. This endpoint can expose `quant` rows, but only from stored parquet partitions generated offline.
 
 ### `POST /predict/enriched`
 
-Accepts 60 historical prices and enriches the forecast with news sentiment.
-
-**Request:**
-```json
-{
-  "symbol": "NVDA",
-  "prices": [432.10, 435.30, 440.00, "... 60 float values total ..."],
-  "include_live_news": true
-}
-```
-
-**Response `200 OK`:**
-```json
-{
-  "symbol": "NVDA",
-  "predicted_close": 487.32,
-  "sentiment_score": 0.43,
-  "sentiment_label": "positive",
-  "news_count": 12,
-  "top_headline": "NVIDIA beats Q2 estimates on AI demand surge",
-  "lower_bound": 479.10,
-  "upper_bound": 495.54,
-  "confidence": 0.95,
-  "currency": "USD",
-  "model": "lstm_nvda_enriched",
-  "timestamp": "2024-07-21T14:32:00Z"
-}
-```
+Reserved for a later stage of the API and currently returns `501 Not Implemented`.
 
 ### `GET /news/{symbol}`
 
-Returns recent news items and aggregated sentiment context for a supported symbol.
+Reserved for a later stage of the API and currently returns `501 Not Implemented`.
+
+### `GET /methods`
+
+Returns a machine-readable explanation of the prediction methods exposed by the API, including the rule that quantum inference is batch-only.
+
+### `GET /data-usage`
+
+Returns the data sources, lookback/horizon settings, supported symbols, and the serving policy used by the API.
 
 ### `GET /metrics`
 
