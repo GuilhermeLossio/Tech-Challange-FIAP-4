@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create an Athena database and external tables that point to the "
-            "raw, refined, feature, and forecast datasets stored in S3."
+            "raw, refined, feature, and future prediction datasets stored in S3."
         )
     )
     parser.add_argument(
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-column",
         default="close",
-        help="Target column name used in refined/feature/forecast datasets.",
+        help="Target column name used in refined/feature/future prediction datasets.",
     )
     parser.add_argument(
         "--lookback",
@@ -117,7 +117,7 @@ def main() -> int:
         print(f"Raw table:      {result.raw_table_name}")
         print(f"Refined table:  {result.refined_table_name}")
         print(f"Feature table:  {result.feature_table_name}")
-        print(f"Forecast table: {result.forecast_table_name}")
+        print(f"Future table:   {result.future_predict_table_name}")
         print("")
         for execution in result.executions:
             print(f"-- {execution.name}")
@@ -130,7 +130,7 @@ def main() -> int:
     print(f"Raw table: {result.raw_table_name}")
     print(f"Refined table: {result.refined_table_name}")
     print(f"Feature table: {result.feature_table_name}")
-    print(f"Forecast table: {result.forecast_table_name}")
+    print(f"Future table: {result.future_predict_table_name}")
     for execution in result.executions:
         print(f"- {execution.name}: {execution.state} ({execution.query_execution_id})")
 

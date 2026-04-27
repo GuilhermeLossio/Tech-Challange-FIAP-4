@@ -62,7 +62,7 @@ class AthenaProvisionResult:
     raw_table_name: str
     refined_table_name: str
     feature_table_name: str
-    forecast_table_name: str
+    future_predict_table_name: str
     executions: tuple[AthenaQueryExecutionResult, ...]
 
 
@@ -93,9 +93,7 @@ class ProvisionAthenaCatalogUseCase:
             target_column=request.target_column,
             lookback=request.lookback,
         )
-        forecast_table_name = self._build_forecast_table_name(
-            target_column=request.target_column,
-        )
+        future_predict_table_name = self._build_future_predict_table_name()
 
         statements: list[tuple[str, str]] = []
         statements.append(
@@ -121,8 +119,11 @@ class ProvisionAthenaCatalogUseCase:
                         self._build_drop_table_sql(request.database_name, feature_table_name),
                     ),
                     (
-                        f"drop_{forecast_table_name}",
-                        self._build_drop_table_sql(request.database_name, forecast_table_name),
+                        f"drop_{future_predict_table_name}",
+                        self._build_drop_table_sql(
+                            request.database_name,
+                            future_predict_table_name,
+                        ),
                     ),
                 ]
             )
@@ -164,10 +165,10 @@ class ProvisionAthenaCatalogUseCase:
                     ),
                 ),
                 (
-                    f"create_{forecast_table_name}",
-                    self._build_forecast_table_sql(
+                    f"create_{future_predict_table_name}",
+                    self._build_future_predict_table_sql(
                         database_name=request.database_name,
-                        table_name=forecast_table_name,
+                        table_name=future_predict_table_name,
                         s3_root=self._join_s3_root(
                             request.processed_bucket,
                             request.processed_prefix,
@@ -193,8 +194,11 @@ class ProvisionAthenaCatalogUseCase:
                         self._build_repair_table_sql(request.database_name, feature_table_name),
                     ),
                     (
-                        f"repair_{forecast_table_name}",
-                        self._build_repair_table_sql(request.database_name, forecast_table_name),
+                        f"repair_{future_predict_table_name}",
+                        self._build_repair_table_sql(
+                            request.database_name,
+                            future_predict_table_name,
+                        ),
                     ),
                 ]
             )
@@ -205,7 +209,7 @@ class ProvisionAthenaCatalogUseCase:
                 raw_table_name=raw_table_name,
                 refined_table_name=refined_table_name,
                 feature_table_name=feature_table_name,
-                forecast_table_name=forecast_table_name,
+                future_predict_table_name=future_predict_table_name,
                 executions=tuple(
                     AthenaQueryExecutionResult(
                         name=name,
@@ -248,7 +252,7 @@ class ProvisionAthenaCatalogUseCase:
             raw_table_name=raw_table_name,
             refined_table_name=refined_table_name,
             feature_table_name=feature_table_name,
-            forecast_table_name=forecast_table_name,
+            future_predict_table_name=future_predict_table_name,
             executions=tuple(executions),
         )
 
@@ -280,10 +284,8 @@ class ProvisionAthenaCatalogUseCase:
             lookback=request.lookback,
         )):
             raise ValueError("Derived feature table name is not a valid Athena identifier.")
-        if not IDENTIFIER_PATTERN.match(self._build_forecast_table_name(
-            target_column=request.target_column,
-        )):
-            raise ValueError("Derived forecast table name is not a valid Athena identifier.")
+        if not IDENTIFIER_PATTERN.match(self._build_future_predict_table_name()):
+            raise ValueError("Derived future_predict table name is not a valid Athena identifier.")
         if request.lookback <= 0:
             raise ValueError("lookback must be greater than zero.")
         if not request.raw_bucket.strip():
@@ -318,8 +320,8 @@ class ProvisionAthenaCatalogUseCase:
         return f"feature_{cls._normalize_identifier(target_column)}_lkb{lookback}"
 
     @classmethod
-    def _build_forecast_table_name(cls, *, target_column: str) -> str:
-        return f"forecast_{cls._normalize_identifier(target_column)}"
+    def _build_future_predict_table_name(cls) -> str:
+        return "future_predict"
 
     @staticmethod
     def _join_s3_root(bucket: str, prefix: str) -> str:
@@ -480,7 +482,7 @@ class ProvisionAthenaCatalogUseCase:
             location=f"{s3_root}/feature_data/",
         )
 
-    def _build_forecast_table_sql(
+    def _build_future_predict_table_sql(
         self,
         *,
         database_name: str,
@@ -490,6 +492,9 @@ class ProvisionAthenaCatalogUseCase:
         columns = [
             ("target_column", "string"),
             ("generated_at_utc", "string"),
+            ("generated_at_token", "string"),
+            ("predict_type", "string"),
+            ("model_family", "string"),
             ("model_name", "string"),
             ("model_local_path", "string"),
             ("training_manifest_local_path", "string"),
@@ -498,6 +503,8 @@ class ProvisionAthenaCatalogUseCase:
             ("forecast_date", "string"),
             ("predicted_close", "double"),
             ("predicted_scaled", "double"),
+            ("predicted_direction", "bigint"),
+            ("predicted_direction_label", "string"),
             ("last_observed_date", "string"),
             ("last_observed_close", "double"),
             ("input_window_start_date", "string"),
@@ -507,6 +514,8 @@ class ProvisionAthenaCatalogUseCase:
             ("observed_points_in_window", "bigint"),
             ("predicted_points_in_window", "bigint"),
             ("recursive_forecast", "boolean"),
+            ("is_price_proxy", "boolean"),
+            ("price_proxy_method", "string"),
         ]
         partitions = [
             ("source", "string"),
@@ -521,7 +530,7 @@ class ProvisionAthenaCatalogUseCase:
             table_name=table_name,
             columns=columns,
             partitions=partitions,
-            location=f"{s3_root}/forecast_data/",
+            location=f"{s3_root}/future_predict/",
         )
 
     def _build_parquet_table_sql(

@@ -17,7 +17,14 @@ from src.application.use_cases.generate_forecast_batch import (  # noqa: E402
     ForecastBatchRequest,
     GenerateForecastBatchUseCase,
 )
-from src.infrastructure.config.settings import ForecastPipelineSettings  # noqa: E402
+from src.application.use_cases.provision_athena_catalog import (  # noqa: E402
+    AthenaProvisionRequest,
+    ProvisionAthenaCatalogUseCase,
+)
+from src.infrastructure.config.settings import (  # noqa: E402
+    AthenaCatalogSettings,
+    ForecastPipelineSettings,
+)
 from src.infrastructure.storage.local_processed_store import LocalProcessedStore  # noqa: E402
 from src.infrastructure.storage.s3_raw_store import S3RawStore  # noqa: E402
 
@@ -28,8 +35,9 @@ DEFAULT_SYMBOLS = ("NVDA", "AMD", "TSM", "ASML", "QCOM")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate recursive monthly forecasts from the latest market window and "
-            "persist them as flat parquet files that Athena can query directly."
+            "Generate future predictions for the selected symbols using both the "
+            "normal LSTM model and the quantum classifier, then persist them to "
+            "Parquet, S3, and Athena."
         )
     )
     parser.add_argument(
@@ -68,12 +76,57 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-name-prefix",
         default="lstm",
-        help="Prefix used when resolving model files, for example `lstm` -> `models/lstm_nvda.keras`.",
+        help="Prefix used when resolving Keras model files, for example `lstm` -> `models/lstm_nvda.keras`.",
+    )
+    parser.add_argument(
+        "--quantum-model-name-prefix",
+        default="quantum_vqc",
+        help="Prefix used when resolving quantum model files, for example `quantum_vqc` -> `models/quantum_vqc_nvda.json`.",
+    )
+    parser.add_argument(
+        "--skip-normal",
+        action="store_true",
+        help="Skip normal LSTM predictions.",
+    )
+    parser.add_argument(
+        "--skip-quant",
+        action="store_true",
+        help="Skip quantum predictions.",
     )
     parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist forecast files locally and skip S3 upload.",
+    )
+    parser.add_argument(
+        "--skip-athena",
+        action="store_true",
+        help="Skip Athena catalog provisioning after the S3 upload completes.",
+    )
+    parser.add_argument(
+        "--athena-database",
+        default=None,
+        help="Athena database name. Defaults to ATHENA_DATABASE or tech_challenge_phase4.",
+    )
+    parser.add_argument(
+        "--athena-workgroup",
+        default=None,
+        help="Athena workgroup. Defaults to ATHENA_WORKGROUP or primary.",
+    )
+    parser.add_argument(
+        "--athena-output-s3-uri",
+        default=None,
+        help="S3 URI for Athena query results. Required when the workgroup has no output location configured.",
+    )
+    parser.add_argument(
+        "--replace-athena-tables",
+        action="store_true",
+        help="Drop and recreate Athena external tables before running the repair step.",
+    )
+    parser.add_argument(
+        "--skip-athena-repair",
+        action="store_true",
+        help="Skip `MSCK REPAIR TABLE` after creating the Athena tables.",
     )
     return parser.parse_args()
 
@@ -137,6 +190,7 @@ def build_processed_s3_store(
 def main() -> int:
     args = parse_args()
     settings = ForecastPipelineSettings.from_env()
+    athena_settings = AthenaCatalogSettings.from_env()
     upload_to_s3 = not args.skip_s3
     extraction_date = (
         parse_iso_date(args.extraction_date)
@@ -160,12 +214,15 @@ def main() -> int:
         lookback=args.lookback,
         horizon_days=args.horizon_days,
         model_name_prefix=args.model_name_prefix,
+        quantum_model_name_prefix=args.quantum_model_name_prefix,
+        include_normal=not args.skip_normal,
+        include_quantum=not args.skip_quant,
         upload_to_s3=upload_to_s3,
     )
 
     try:
         result = use_case.generate(request)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from exc
 
     print("Forecast generation completed.")
@@ -177,15 +234,49 @@ def main() -> int:
         print(
             f"- {asset.symbol}: "
             f"{asset.forecast_start_date} -> {asset.forecast_end_date} "
-            f"({asset.row_count} rows)"
+            f"({asset.row_count} rows; {', '.join(asset.predict_types)})"
         )
         print(f"  last observed: {asset.last_observed_date} close={asset.last_observed_close:.4f}")
-        print(f"  model: {asset.model_local_path}")
         print(f"  local: {asset.local_path}")
-        if asset.training_manifest_local_path:
-            print(f"  training manifest: {asset.training_manifest_local_path}")
+        if asset.normal_model_local_path:
+            print(f"  normal model: {asset.normal_model_local_path}")
+        if asset.quantum_model_local_path:
+            print(f"  quantum model: {asset.quantum_model_local_path}")
         if asset.s3_uri:
             print(f"  s3: {asset.s3_uri}")
+
+    if upload_to_s3 and not args.skip_athena:
+        provision_request = AthenaProvisionRequest(
+            database_name=(args.athena_database or athena_settings.athena_database).lower(),
+            raw_bucket=athena_settings.s3_bucket_raw or "",
+            raw_prefix=athena_settings.s3_raw_prefix,
+            refined_bucket=athena_settings.s3_bucket_refined or "",
+            refined_prefix=athena_settings.s3_refined_prefix,
+            processed_bucket=(
+                athena_settings.s3_bucket_processed or settings.s3_bucket_processed or ""
+            ),
+            processed_prefix=athena_settings.s3_processed_prefix,
+            target_column=args.target_column,
+            lookback=args.lookback,
+            repair_tables=not args.skip_athena_repair,
+            replace_tables=args.replace_athena_tables,
+            workgroup=args.athena_workgroup or athena_settings.athena_workgroup,
+            output_s3_uri=args.athena_output_s3_uri or athena_settings.athena_output_s3_uri,
+            execute=True,
+        )
+        try:
+            athena_result = ProvisionAthenaCatalogUseCase(
+                region_name=athena_settings.aws_region,
+                endpoint_url=athena_settings.aws_endpoint_url,
+            ).execute(provision_request)
+        except (RuntimeError, ValueError, TimeoutError) as exc:
+            raise SystemExit(f"Athena provisioning failed: {exc}") from exc
+
+        print("Athena catalog provision completed.")
+        print(
+            f"Table ready: {athena_result.database_name}."
+            f"{athena_result.future_predict_table_name}"
+        )
 
     return 0
 

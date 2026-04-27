@@ -440,19 +440,34 @@ The script stores model artifacts in `models/` and writes a manifest under `mode
 
 ### Generate Monthly Forecast Datasets
 
-For practical tests, the safest extension is a **batch forecast dataset** instead of trying to stretch the online `POST /predict` contract. The new generator uses the last observed `lookback` window, applies the trained scaler, and rolls the 1-day LSTM forecast forward recursively for **30 future business days**.
+For practical tests, the safest extension is a **batch future-prediction dataset** instead of trying to stretch the online `POST /predict` contract. The generator uses the last observed `lookback` window and materializes both model families for each future business day:
+
+- `predict_type=normal` uses the trained 1-day LSTM and rolls it forward recursively
+- `predict_type=quant` uses the trained quantum classifier to predict direction and stores a price proxy derived from recent realized volatility
 
 Important: the forecast always starts from the **last date available in the raw zone**. With the default `scripts/generate_raw.py` behavior documented above, that means the horizon starts after the last completed fiscal year end. If you want a more current practical test window, regenerate `raw`, `refined`, and the model with an explicit `--end-date` first.
 
 ```bash
-# Local forecast dataset only
-python scripts/generate_forecast.py --skip-s3
+# Local future-prediction dataset only
+python scripts/generate_forecast.py --skip-s3 --skip-athena
 
-# Specific extraction date and symbols
+# Specific extraction date and symbols, with S3 + Athena publish
 python scripts/generate_forecast.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --horizon-days 30
 ```
 
-The output is intentionally flat, with **one row per symbol per future business day**, so it can be queried directly from Athena and later exposed by an API without reshaping arrays in the query layer.
+The output is intentionally flat, with **one row per symbol, per future business day, per model family**, so it can be queried directly from Athena and later exposed by an API without reshaping arrays in the query layer.
+
+Current layout:
+
+```text
+data/processed/
+└── future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
+```
+
+```text
+s3://your-processed-bucket-name/processed/
+└── future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
+```
 
 ```text
 data/processed/
@@ -469,9 +484,11 @@ s3://your-processed-bucket-name/processed/
 Recommended Athena-friendly columns include:
 
 - `symbol`
+- `predict_type`
 - `forecast_step`
 - `forecast_date`
 - `predicted_close`
+- `predicted_direction`
 - `last_observed_date`
 - `last_observed_close`
 - `input_window_end_origin`
@@ -498,7 +515,7 @@ The script creates:
 - `raw_ohlcv`
 - `refined_close_lkb60`
 - `feature_close_lkb60`
-- `forecast_close`
+- `future_predict`
 
 Important:
 

@@ -112,15 +112,17 @@ src/application/
 
 ### Forecast Batch Materialization
 
-For monthly practical tests, the recommended design is to keep forecasts in a dedicated processed-zone dataset instead of appending them to `raw` or `refined`. The batch generator:
+For monthly practical tests, the recommended design is to keep future predictions in a dedicated processed-zone dataset instead of appending them to `raw` or `refined`. The batch generator:
 
 - reads the latest raw closing prices from `data/raw`
 - reuses scaler metadata from the refined manifest for the same `extraction_date`
 - resolves the latest trained `lstm_<symbol>.keras` artifact for that partition
+- resolves the latest trained `quantum_vqc_<symbol>.json` artifact and its preprocessing bundle
 - rolls the 1-step LSTM forward recursively for 30 future business days
-- writes one flat parquet row per forecasted day under `data/processed/forecast_data/...`
+- materializes one row with `predict_type=normal` and one row with `predict_type=quant` for each forecast step
+- writes the serving dataset under `data/processed/future_predict/...`
 
-This separation keeps historical training lineage immutable while producing a serving-friendly dataset for Athena and future APIs.
+This separation keeps historical training lineage immutable while producing a serving-friendly dataset for Athena and future APIs. The quantum path remains a direction classifier, so its row stores a directional signal plus a deterministic price proxy for downstream consumers.
 
 ### 4. API Layer
 
