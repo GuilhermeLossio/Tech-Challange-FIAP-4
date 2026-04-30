@@ -16,6 +16,7 @@ This report lists what is still missing to match the implementation promised by 
 - Classical-versus-quantum comparison exists through `scripts/train_and_compare_models.py`.
 - A baseline FastAPI layer now exists through `src/api/main.py`, `src/api/routes/`, and `src/api/schemas/`.
 - The API already exposes `GET /health`, `POST /predict`, `GET /forecasts/{symbol}`, `GET /methods`, `GET /data-usage`, and `GET /metrics`.
+- A baseline read-only Flask client view now exists through `src/front/app.py` and `scripts/run_front.py`.
 - News aggregation logic exists in `src/application/services/news_aggregator_service.py`.
 
 ## Pending Work

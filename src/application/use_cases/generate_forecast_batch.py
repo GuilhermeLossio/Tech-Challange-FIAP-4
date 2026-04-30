@@ -13,6 +13,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from src.application.services.forecast_guardrails import apply_standard_forecast_guardrail
+
 try:
     import tensorflow as tf
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local environment
@@ -421,10 +423,13 @@ class GenerateForecastBatchUseCase:
             / f"extraction_date={extraction_date.isoformat()}"
         )
         if manifests_root.exists():
-            candidate_paths = sorted(
-                manifests_root.glob("trained_at=*/keras_training_manifest.json"),
-                reverse=True,
-            )
+            best_candidate: tuple[
+                tuple[float, float, float, float, int],
+                Path,
+                dict[str, Any],
+                dict[str, Any],
+            ] | None = None
+            candidate_paths = manifests_root.glob("trained_at=*/keras_training_manifest.json")
             for manifest_path in candidate_paths:
                 payload = json.loads(manifest_path.read_text(encoding="utf-8"))
                 request_payload = payload.get("request", {})
@@ -448,6 +453,20 @@ class GenerateForecastBatchUseCase:
                 if asset_payload is None:
                     continue
 
+                candidate_score = self._score_regression_asset(
+                    asset_payload=asset_payload,
+                    manifest_path=manifest_path,
+                )
+                if best_candidate is None or candidate_score < best_candidate[0]:
+                    best_candidate = (
+                        candidate_score,
+                        manifest_path,
+                        payload,
+                        asset_payload,
+                    )
+
+            if best_candidate is not None:
+                _, manifest_path, payload, asset_payload = best_candidate
                 return {
                     "model_local_path": str(asset_payload["model_local_path"]),
                     "training_manifest_local_path": str(manifest_path),
@@ -597,6 +616,19 @@ class GenerateForecastBatchUseCase:
                     scale=scaler_metadata["scale"],
                 )[0]
             )
+            guardrail = apply_standard_forecast_guardrail(
+                raw_model_close=predicted_close,
+                current_close=input_window_end_close,
+                recent_window=raw_window.astype(np.float64),
+            )
+            predicted_close = guardrail.constrained_close
+            predicted_scaled = float(
+                self._scale_array(
+                    np.asarray([predicted_close], dtype=np.float32),
+                    min_offset=scaler_metadata["min_offset"],
+                    scale=scaler_metadata["scale"],
+                )[0]
+            )
             predicted_direction = int(predicted_close > input_window_end_close)
 
             observed_points_in_window = max(request.lookback - (step - 1), 0)
@@ -622,6 +654,10 @@ class GenerateForecastBatchUseCase:
                     predicted_close=predicted_close,
                     predicted_scaled=predicted_scaled,
                     predicted_direction=predicted_direction,
+                    raw_model_predicted_close=guardrail.raw_model_close,
+                    prediction_constraint_applied=guardrail.applied,
+                    prediction_constraint_method=guardrail.method,
+                    prediction_return_cap=guardrail.return_cap,
                     last_observed_date=last_observed_date,
                     last_observed_close=last_observed_close,
                     input_window_start_date=input_window_start_date,
@@ -728,6 +764,10 @@ class GenerateForecastBatchUseCase:
                     predicted_close=predicted_close,
                     predicted_scaled=None,
                     predicted_direction=predicted_direction,
+                    raw_model_predicted_close=None,
+                    prediction_constraint_applied=False,
+                    prediction_constraint_method=None,
+                    prediction_return_cap=None,
                     last_observed_date=last_observed_date,
                     last_observed_close=last_observed_close,
                     input_window_start_date=input_window_start_date,
@@ -930,6 +970,42 @@ class GenerateForecastBatchUseCase:
         proxy_return = float(np.mean(np.abs(daily_returns[-effective_periods:])))
         return min(max(proxy_return, 0.0025), 0.15)
 
+    @classmethod
+    def _score_regression_asset(
+        cls,
+        *,
+        asset_payload: dict[str, Any],
+        manifest_path: Path,
+    ) -> tuple[float, float, float, float, int]:
+        return (
+            cls._metric_or_inf(asset_payload.get("test_metrics"), "mae", "rmse"),
+            cls._metric_or_inf(asset_payload.get("validation_metrics"), "mae", "rmse"),
+            cls._metric_or_inf(asset_payload.get("test_metrics"), "rmse"),
+            cls._metric_or_inf(asset_payload.get("validation_metrics"), "rmse"),
+            -cls._trained_at_token(manifest_path),
+        )
+
+    @staticmethod
+    def _metric_or_inf(
+        metrics_payload: Any,
+        *preferred_keys: str,
+    ) -> float:
+        metrics = metrics_payload or {}
+        for key in preferred_keys:
+            value = metrics.get(key)
+            if value is not None:
+                return abs(float(value))
+        return float("inf")
+
+    @staticmethod
+    def _trained_at_token(manifest_path: Path) -> int:
+        token = manifest_path.parent.name.split("=", 1)[-1]
+        normalized = token.replace("T", "").replace("Z", "")
+        try:
+            return int(normalized)
+        except ValueError:
+            return 0
+
     @staticmethod
     def _build_future_predict_row(
         *,
@@ -952,6 +1028,10 @@ class GenerateForecastBatchUseCase:
         predicted_close: float,
         predicted_scaled: float | None,
         predicted_direction: int,
+        raw_model_predicted_close: float | None,
+        prediction_constraint_applied: bool,
+        prediction_constraint_method: str | None,
+        prediction_return_cap: float | None,
         last_observed_date: pd.Timestamp,
         last_observed_close: float,
         input_window_start_date: pd.Timestamp,
@@ -984,8 +1064,18 @@ class GenerateForecastBatchUseCase:
             "predicted_scaled": (
                 float(predicted_scaled) if predicted_scaled is not None else None
             ),
+            "raw_model_predicted_close": (
+                float(raw_model_predicted_close)
+                if raw_model_predicted_close is not None
+                else None
+            ),
             "predicted_direction": int(predicted_direction),
             "predicted_direction_label": "up" if int(predicted_direction) == 1 else "down",
+            "prediction_constraint_applied": bool(prediction_constraint_applied),
+            "prediction_constraint_method": prediction_constraint_method,
+            "prediction_return_cap": (
+                float(prediction_return_cap) if prediction_return_cap is not None else None
+            ),
             "last_observed_date": last_observed_date.strftime("%Y-%m-%d"),
             "last_observed_close": float(last_observed_close),
             "input_window_start_date": input_window_start_date.strftime("%Y-%m-%d"),

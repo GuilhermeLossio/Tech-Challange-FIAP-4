@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 import os
+import shutil
 import sys
 from typing import Any
 
@@ -180,7 +181,11 @@ class TrainQuantumModelUseCase:
             )
 
             model_relative_path = self._build_model_relative_path(
+                source=request.source,
                 symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
                 model_name_prefix=request.model_name_prefix,
             )
             model_payload = {
@@ -206,6 +211,11 @@ class TrainQuantumModelUseCase:
                 "preprocessing_summary": preprocessing_artifact["summary"],
             }
             model_path = self._local_store.write_json(model_payload, model_relative_path)
+            self._publish_latest_model_alias(
+                model_path=model_path,
+                symbol=symbol,
+                model_name_prefix=request.model_name_prefix,
+            )
             model_s3_uri = None
             if self._s3_store is not None:
                 model_s3_uri = self._s3_store.upload_file(
@@ -830,6 +840,41 @@ class TrainQuantumModelUseCase:
 
     @staticmethod
     def _build_model_relative_path(
+        *,
+        source: str,
+        symbol: str,
+        lookback: int,
+        extraction_date: date,
+        trained_at_token: str,
+        model_name_prefix: str,
+    ) -> Path:
+        return (
+            Path("quantum_training_runs")
+            / f"source={source}"
+            / f"symbol={symbol.upper()}"
+            / f"lookback={lookback}"
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"trained_at={trained_at_token}"
+            / f"{model_name_prefix}_{symbol.lower()}.json"
+        )
+
+    def _publish_latest_model_alias(
+        self,
+        *,
+        model_path: Path,
+        symbol: str,
+        model_name_prefix: str,
+    ) -> Path:
+        published_relative_path = self._build_published_model_relative_path(
+            symbol=symbol,
+            model_name_prefix=model_name_prefix,
+        )
+        published_path = self._local_store.prepare_path(published_relative_path)
+        shutil.copy2(model_path, published_path)
+        return published_path
+
+    @staticmethod
+    def _build_published_model_relative_path(
         *,
         symbol: str,
         model_name_prefix: str,

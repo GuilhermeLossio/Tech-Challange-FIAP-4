@@ -9,6 +9,11 @@ from typing import Any
 
 import numpy as np
 
+from src.application.services.forecast_guardrails import (
+    apply_standard_forecast_guardrail,
+    clamp_interval_to_guardrail_band,
+)
+
 try:
     import tensorflow as tf
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local environment
@@ -50,6 +55,10 @@ class StandardPredictionResult:
     requested_reference_date: str | None
     resolved_window_start_date: str | None
     resolved_window_end_date: str | None
+    raw_model_predicted_close: float | None = None
+    prediction_constraint_applied: bool = False
+    prediction_constraint_method: str | None = None
+    prediction_return_cap: float | None = None
 
 
 class StandardPredictorService:
@@ -202,10 +211,20 @@ class StandardPredictorService:
                 scale=scaler_metadata["scale"],
             )[0]
         )
+        guardrail = apply_standard_forecast_guardrail(
+            raw_model_close=predicted_close,
+            current_close=float(raw_window[-1]),
+            recent_window=raw_window.astype(np.float64),
+        )
+        predicted_close = guardrail.constrained_close
 
         interval_width = resolution.interval_width or max(abs(predicted_close) * 0.05, 1.0)
-        lower_bound = max(predicted_close - interval_width, 0.0)
-        upper_bound = predicted_close + interval_width
+        lower_bound, upper_bound = clamp_interval_to_guardrail_band(
+            predicted_close=predicted_close,
+            interval_width=interval_width,
+            reference_close=float(raw_window[-1]),
+            return_cap=guardrail.return_cap,
+        )
 
         return StandardPredictionResult(
             symbol=normalized_symbol,
@@ -224,6 +243,10 @@ class StandardPredictorService:
             requested_reference_date=requested_reference_date,
             resolved_window_start_date=resolved_window_start_date,
             resolved_window_end_date=resolved_window_end_date,
+            raw_model_predicted_close=guardrail.raw_model_close,
+            prediction_constraint_applied=guardrail.applied,
+            prediction_constraint_method=guardrail.method,
+            prediction_return_cap=guardrail.return_cap,
         )
 
     def _ensure_tensorflow_available(self) -> None:
@@ -383,10 +406,13 @@ class StandardPredictorService:
             / f"extraction_date={extraction_date.isoformat()}"
         )
         if manifests_root.exists():
-            candidate_paths = sorted(
-                manifests_root.glob("trained_at=*/keras_training_manifest.json"),
-                reverse=True,
-            )
+            best_candidate: tuple[
+                tuple[float, float, float, float, int],
+                Path,
+                dict[str, Any],
+                dict[str, Any],
+            ] | None = None
+            candidate_paths = manifests_root.glob("trained_at=*/keras_training_manifest.json")
             for manifest_path in candidate_paths:
                 payload = json.loads(manifest_path.read_text(encoding="utf-8"))
                 request_payload = payload.get("request", {})
@@ -410,6 +436,20 @@ class StandardPredictorService:
                 if asset_payload is None:
                     continue
 
+                candidate_score = self._score_regression_asset(
+                    asset_payload=asset_payload,
+                    manifest_path=manifest_path,
+                )
+                if best_candidate is None or candidate_score < best_candidate[0]:
+                    best_candidate = (
+                        candidate_score,
+                        manifest_path,
+                        payload,
+                        asset_payload,
+                    )
+
+            if best_candidate is not None:
+                _, manifest_path, payload, asset_payload = best_candidate
                 interval_width = self._resolve_interval_width(asset_payload)
                 return ModelResolution(
                     symbol=symbol.upper(),
@@ -458,6 +498,42 @@ class StandardPredictorService:
             if rmse is not None:
                 return abs(float(rmse))
         return None
+
+    @classmethod
+    def _score_regression_asset(
+        cls,
+        *,
+        asset_payload: dict[str, Any],
+        manifest_path: Path,
+    ) -> tuple[float, float, float, float, int]:
+        return (
+            cls._metric_or_inf(asset_payload.get("test_metrics"), "mae", "rmse"),
+            cls._metric_or_inf(asset_payload.get("validation_metrics"), "mae", "rmse"),
+            cls._metric_or_inf(asset_payload.get("test_metrics"), "rmse"),
+            cls._metric_or_inf(asset_payload.get("validation_metrics"), "rmse"),
+            -cls._trained_at_token(manifest_path),
+        )
+
+    @staticmethod
+    def _metric_or_inf(
+        metrics_payload: Any,
+        *preferred_keys: str,
+    ) -> float:
+        metrics = metrics_payload or {}
+        for key in preferred_keys:
+            value = metrics.get(key)
+            if value is not None:
+                return abs(float(value))
+        return float("inf")
+
+    @staticmethod
+    def _trained_at_token(manifest_path: Path) -> int:
+        token = manifest_path.parent.name.split("=", 1)[-1]
+        normalized = token.replace("T", "").replace("Z", "")
+        try:
+            return int(normalized)
+        except ValueError:
+            return 0
 
     @staticmethod
     def _scale_array(

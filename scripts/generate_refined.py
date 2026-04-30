@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.application.services.refined_data_pipeline_service import (  # noqa: E402
+    DEFAULT_HISTORY_YEARS,
     RefinedDataPipelineService,
     RefinedDatasetRequest,
 )
@@ -64,6 +65,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.15,
         help="Validation split ratio.",
+    )
+    parser.add_argument(
+        "--history-years",
+        type=int,
+        default=DEFAULT_HISTORY_YEARS,
+        help=(
+            "Number of most recent years to keep before building splits and scaling. "
+            f"Defaults to {DEFAULT_HISTORY_YEARS}; if less history exists, the pipeline uses all available rows."
+        ),
     )
     parser.add_argument(
         "--skip-s3",
@@ -146,6 +156,7 @@ def main() -> int:
         lookback=args.lookback,
         train_ratio=args.train_ratio,
         validation_ratio=args.validation_ratio,
+        history_years=args.history_years,
         upload_to_s3=upload_to_s3,
     )
     result = service.generate(request)
@@ -159,6 +170,19 @@ def main() -> int:
         print(f"- {asset.symbol}: {asset.row_count} rows")
         print(f"  local: {asset.local_path}")
         print(f"  splits: {asset.split_counts}")
+        print(
+            "  history: "
+            f"{asset.history_start_date} -> {asset.history_end_date}"
+            + (
+                f" ({asset.history_years}y window)"
+                if asset.history_years is not None
+                else ""
+            )
+        )
+        print(
+            "  scaler fit: "
+            f"{asset.scaler_fit_start_date} -> {asset.scaler_fit_end_date}"
+        )
         if asset.s3_uri:
             print(f"  s3: {asset.s3_uri}")
 

@@ -19,6 +19,9 @@ from src.infrastructure.storage.local_processed_store import LocalProcessedStore
 from src.infrastructure.storage.s3_raw_store import S3RawStore
 
 
+DEFAULT_HISTORY_YEARS = 10
+
+
 @dataclass(frozen=True)
 class RefinedDatasetRequest:
     symbols: tuple[str, ...]
@@ -28,6 +31,7 @@ class RefinedDatasetRequest:
     lookback: int = 60
     train_ratio: float = 0.70
     validation_ratio: float = 0.15
+    history_years: int | None = DEFAULT_HISTORY_YEARS
     upload_to_s3: bool = True
 
 
@@ -43,6 +47,11 @@ class RefinedAssetArtifact:
     scaler_scale: float
     data_min: float
     data_max: float
+    history_years: int | None
+    history_start_date: str
+    history_end_date: str
+    scaler_fit_start_date: str
+    scaler_fit_end_date: str
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,11 @@ class RefinedDataPipelineService:
                     scaler_scale=float(scaler_metadata["scale"]),
                     data_min=float(scaler_metadata["data_min"]),
                     data_max=float(scaler_metadata["data_max"]),
+                    history_years=request.history_years,
+                    history_start_date=str(scaler_metadata["history_start_date"]),
+                    history_end_date=str(scaler_metadata["history_end_date"]),
+                    scaler_fit_start_date=str(scaler_metadata["scaler_fit_start_date"]),
+                    scaler_fit_end_date=str(scaler_metadata["scaler_fit_end_date"]),
                 )
             )
 
@@ -139,6 +153,7 @@ class RefinedDataPipelineService:
                 "lookback": request.lookback,
                 "train_ratio": request.train_ratio,
                 "validation_ratio": request.validation_ratio,
+                "history_years": request.history_years,
                 "upload_to_s3": request.upload_to_s3,
             },
             "asset_count": len(artifacts),
@@ -180,6 +195,8 @@ class RefinedDataPipelineService:
             raise ValueError("validation_ratio must be between zero and one.")
         if request.train_ratio + request.validation_ratio >= 1:
             raise ValueError("train_ratio + validation_ratio must be less than one.")
+        if request.history_years is not None and request.history_years <= 0:
+            raise ValueError("history_years must be greater than zero when provided.")
 
     def _load_raw_frame(
         self,
@@ -212,27 +229,49 @@ class RefinedDataPipelineService:
         raw_frame: pd.DataFrame,
         request: RefinedDatasetRequest,
         symbol: str,
-    ) -> tuple[pd.DataFrame, dict[str, float]]:
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
         if request.target_column not in raw_frame.columns:
             raise ValueError(
                 f"Raw input for symbol {symbol!r} does not contain "
                 f"target column {request.target_column!r}."
             )
 
-        working = raw_frame.loc[:, ["date", request.target_column]].dropna().copy()
+        working = raw_frame.loc[:, ["date", request.target_column]].copy()
+        working["date"] = pd.to_datetime(working["date"], errors="coerce")
+        working[request.target_column] = pd.to_numeric(
+            working[request.target_column],
+            errors="coerce",
+        )
+        working = working.dropna(subset=["date", request.target_column])
+        working = working.sort_values("date").reset_index(drop=True)
+        if working["date"].duplicated().any():
+            raise ValueError(
+                f"Raw input for symbol {symbol!r} contains duplicate trading dates."
+            )
+
+        if request.history_years is not None:
+            cutoff_date = working["date"].max() - pd.DateOffset(years=request.history_years)
+            working = working.loc[working["date"] >= cutoff_date].reset_index(drop=True)
+
         if len(working.index) <= request.lookback:
             raise ValueError(
                 f"Not enough rows to build refined sequences for symbol {symbol!r}. "
                 f"Need more than {request.lookback} rows."
             )
 
-        working["date"] = pd.to_datetime(working["date"])
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_values = scaler.fit_transform(working[[request.target_column]]).reshape(-1)
-
-        total_sequences = len(scaled_values) - request.lookback
+        total_sequences = len(working.index) - request.lookback
         train_end = int(total_sequences * request.train_ratio)
         validation_end = int(total_sequences * (request.train_ratio + request.validation_ratio))
+        if train_end <= 0:
+            raise ValueError(
+                f"Not enough rows to allocate a non-empty train split for symbol {symbol!r}."
+            )
+
+        scaler_fit_end_index = request.lookback + train_end - 1
+        scaler_fit_frame = working.iloc[: scaler_fit_end_index + 1]
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaler.fit(scaler_fit_frame[[request.target_column]])
+        scaled_values = scaler.transform(working[[request.target_column]]).reshape(-1)
 
         rows: list[dict[str, Any]] = []
         for sequence_index in range(total_sequences):
@@ -268,6 +307,10 @@ class RefinedDataPipelineService:
             "scale": float(scaler.scale_[0]),
             "data_min": float(scaler.data_min_[0]),
             "data_max": float(scaler.data_max_[0]),
+            "history_start_date": working["date"].iloc[0].strftime("%Y-%m-%d"),
+            "history_end_date": working["date"].iloc[-1].strftime("%Y-%m-%d"),
+            "scaler_fit_start_date": scaler_fit_frame["date"].iloc[0].strftime("%Y-%m-%d"),
+            "scaler_fit_end_date": scaler_fit_frame["date"].iloc[-1].strftime("%Y-%m-%d"),
         }
         return refined_frame, scaler_metadata
 
@@ -331,6 +374,7 @@ class RefinedDataPipelineService:
                     "lookback": request.lookback,
                     "train_ratio": request.train_ratio,
                     "validation_ratio": request.validation_ratio,
+                    "history_years": request.history_years,
                     "upload_to_s3": request.upload_to_s3,
                     "symbol": artifact.symbol,
                     "row_count": artifact.row_count,
@@ -344,6 +388,10 @@ class RefinedDataPipelineService:
                     "scaler_scale": artifact.scaler_scale,
                     "data_min": artifact.data_min,
                     "data_max": artifact.data_max,
+                    "history_start_date": artifact.history_start_date,
+                    "history_end_date": artifact.history_end_date,
+                    "scaler_fit_start_date": artifact.scaler_fit_start_date,
+                    "scaler_fit_end_date": artifact.scaler_fit_end_date,
                 }
             )
         return pd.DataFrame(rows)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -127,6 +128,7 @@ class KerasTrainingService:
         artifacts: list[KerasModelArtifact] = []
 
         for symbol in request.symbols:
+            tf.keras.backend.clear_session()
             frame, scaler_metadata = self._load_training_frame(
                 source=request.source,
                 symbol=symbol,
@@ -138,7 +140,11 @@ class KerasTrainingService:
             self._set_random_seed(request.seed)
 
             model_relative_path = self._build_model_relative_path(
+                source=request.source,
                 symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
                 model_name_prefix=request.model_name_prefix,
             )
             model_path = self._local_store.prepare_path(model_relative_path)
@@ -192,6 +198,11 @@ class KerasTrainingService:
             if not model_path.exists():
                 model.save(model_path)
             model = tf.keras.models.load_model(model_path)
+            self._publish_latest_model_alias(
+                model_path=model_path,
+                symbol=symbol,
+                model_name_prefix=request.model_name_prefix,
+            )
             model_s3_uri = None
             if self._s3_store is not None:
                 model_s3_uri = self._s3_store.upload_file(
@@ -416,6 +427,7 @@ class KerasTrainingService:
 
     def _set_random_seed(self, seed: int) -> None:
         np.random.seed(seed)
+        tf.keras.utils.set_random_seed(seed)
         tf.random.set_seed(seed)
 
     def _build_model(
@@ -533,6 +545,41 @@ class KerasTrainingService:
 
     @staticmethod
     def _build_model_relative_path(
+        *,
+        source: str,
+        symbol: str,
+        lookback: int,
+        extraction_date: date,
+        trained_at_token: str,
+        model_name_prefix: str,
+    ) -> Path:
+        return (
+            Path("training_runs")
+            / f"source={source}"
+            / f"symbol={symbol.upper()}"
+            / f"lookback={lookback}"
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"trained_at={trained_at_token}"
+            / f"{model_name_prefix}_{symbol.lower()}.keras"
+        )
+
+    def _publish_latest_model_alias(
+        self,
+        *,
+        model_path: Path,
+        symbol: str,
+        model_name_prefix: str,
+    ) -> Path:
+        published_relative_path = self._build_published_model_relative_path(
+            symbol=symbol,
+            model_name_prefix=model_name_prefix,
+        )
+        published_path = self._local_store.prepare_path(published_relative_path)
+        shutil.copy2(model_path, published_path)
+        return published_path
+
+    @staticmethod
+    def _build_published_model_relative_path(
         *,
         symbol: str,
         model_name_prefix: str,

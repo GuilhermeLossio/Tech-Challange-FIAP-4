@@ -1,10 +1,37 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import json
 
 import pandas as pd
+
+
+def _load_manifest_generated_at(
+    *,
+    processed_root_dir: Path,
+    extraction_date: date,
+    manifest_name: str,
+) -> datetime | None:
+    manifest_path = (
+        processed_root_dir
+        / "manifests"
+        / f"extraction_date={extraction_date.isoformat()}"
+        / manifest_name
+    )
+    if not manifest_path.exists():
+        return None
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw_value = payload.get("generated_at_utc")
+    if raw_value is None:
+        return None
+
+    normalized = str(raw_value).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def load_refined_frame_with_scaler(
@@ -153,17 +180,37 @@ def load_preferred_training_frame(
     lookback: int,
     target_column: str,
 ) -> tuple[pd.DataFrame, dict[str, float], str]:
-    feature_payload = load_feature_frame_with_scaler(
+    refined_generated_at = _load_manifest_generated_at(
         processed_root_dir=processed_root_dir,
-        source=source,
-        symbol=symbol,
         extraction_date=extraction_date,
-        lookback=lookback,
-        target_column=target_column,
+        manifest_name="refined_manifest.json",
     )
-    if feature_payload is not None:
-        frame, scaler_metadata = feature_payload
-        return frame, scaler_metadata, "feature"
+    feature_generated_at = _load_manifest_generated_at(
+        processed_root_dir=processed_root_dir,
+        extraction_date=extraction_date,
+        manifest_name="feature_manifest.json",
+    )
+
+    prefer_feature_frame = (
+        feature_generated_at is not None
+        and (
+            refined_generated_at is None
+            or feature_generated_at >= refined_generated_at
+        )
+    )
+
+    if prefer_feature_frame:
+        feature_payload = load_feature_frame_with_scaler(
+            processed_root_dir=processed_root_dir,
+            source=source,
+            symbol=symbol,
+            extraction_date=extraction_date,
+            lookback=lookback,
+            target_column=target_column,
+        )
+        if feature_payload is not None:
+            frame, scaler_metadata = feature_payload
+            return frame, scaler_metadata, "feature"
 
     frame, scaler_metadata = load_refined_frame_with_scaler(
         processed_root_dir=processed_root_dir,

@@ -134,6 +134,7 @@ The system follows a **Clean Architecture** core with a dedicated **News Intelli
 | Deep learning | TensorFlow / Keras | 2.15 | Baseline and enriched LSTM models |
 | Scaling | scikit-learn | 1.4 | Feature normalization |
 | API framework | FastAPI | 0.111 | REST API |
+| Client interface | Flask | 3.x | Read-only client view |
 | ASGI server | Uvicorn | 0.29 | Local and production serving |
 | Data validation | Pydantic | 2.x | Request and response schemas |
 | NLP sentiment | transformers / FinBERT | latest | Financial text sentiment scoring |
@@ -313,6 +314,9 @@ copy .env.example .env            # Windows
 
 # 5. Start API
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+
+# 6. Start read-only client view
+python scripts/run_front.py
 ```
 
 ### Environment Variables
@@ -344,6 +348,7 @@ Notes:
 - when `prices` is omitted in `POST /predict`, the API builds the 60-day window automatically from local historical data
 - `GET /forecasts/{symbol}` can serve both `normal` and `quant` predictions from the materialized `future_predict` dataset
 - the API never triggers live quantum inference or IBM Quantum token usage at request time
+- `scripts/run_front.py` starts a read-only Flask client view for forecasts and training data on port `5001`
 - `POST /predict/enriched` and `GET /news/{symbol}` are reserved for a later stage and currently return `501`
 
 ### Generate Raw Market Data
@@ -568,6 +573,7 @@ docker-compose logs -f api
 |---|---|
 | API (Swagger UI) | http://localhost:8000/docs |
 | API (ReDoc) | http://localhost:8000/redoc |
+| Client View (Flask) | http://localhost:5001/ |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
 

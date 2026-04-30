@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ front_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">Signal Deck</div>
+          <div class="brand-sub">Semiconductor Forecast Client View</div>
+        </div>
+
+        <form class="filter-panel" method="get" action="/">
+          <div class="filter-title">Read-Only Filters</div>
+
+          <label class="field">
+            <span>Symbol</span>
+            <select name="symbol">
+              {% for item in supported_symbols %}
+              <option value="{{ item }}" {% if item == symbol %}selected{% endif %}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Extraction Date</span>
+            <input type="date" name="extraction_date" value="{{ selected_extraction_date }}">
+          </label>
+
+          <label class="field">
+            <span>Reference Date</span>
+            <input type="date" name="reference_date" value="{{ selected_reference_date }}">
+          </label>
+
+          <label class="field">
+            <span>Predict Type</span>
+            <select name="predict_type">
+              <option value="all" {% if selected_predict_type == 'all' %}selected{% endif %}>All</option>
+              <option value="normal" {% if selected_predict_type == 'normal' %}selected{% endif %}>Normal</option>
+              <option value="quant" {% if selected_predict_type == 'quant' %}selected{% endif %}>Quant</option>
+            </select>
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Forecast From</span>
+              <input type="date" name="forecast_date_from" value="{{ selected_forecast_date_from }}">
+            </label>
+            <label class="field">
+              <span>Forecast To</span>
+              <input type="date" name="forecast_date_to" value="{{ selected_forecast_date_to }}">
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Lookback</span>
+              <input type="number" min="1" name="lookback" value="{{ lookback }}">
+            </label>
+            <label class="field">
+              <span>Horizon</span>
+              <input type="number" min="1" name="horizon_days" value="{{ horizon_days }}">
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Rows</span>
+            <input type="number" min="1" name="limit" value="{{ row_limit }}">
+          </label>
+
+          <button type="submit" class="primary-action">Refresh View</button>
+        </form>
+
+        <div class="read-only-note">
+          <div class="pill pill-locked">Read Only</div>
+          <p>Standard users can filter and inspect predictions and training data, but this interface exposes no mutation or upload action.</p>
+        </div>
+      </aside>
+
+      <main class="canvas">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Client View</div>
+            <h1>{{ symbol }} Forecast Console</h1>
+            <p>Precomputed forecasts, training signals, and online classical inference in a read-only surface.</p>
+          </div>
+          <div class="hero-meta">
+            <div class="meta-chip">Today UTC {{ today_utc }}</div>
+            <div class="meta-chip meta-chip-accent">Quantum online: disabled</div>
+          </div>
+        </header>
+
+        {% if warnings %}
+        <section class="warning-stack">
+          {% for warning in warnings %}
+          <div class="warning-card">{{ warning }}</div>
+          {% endfor %}
+        </section>
+        {% endif %}
+
+        <section class="metrics-grid">
+          {% for metric in overview_metrics %}
+          <article class="metric-card {% if loop.index0 == 0 %}metric-card-primary{% endif %}">
+            <div class="metric-label">{{ metric.label }}</div>
+            <div class="metric-value">{{ metric.value }}</div>
+            <div class="metric-sub">{{ metric.detail }}</div>
+          </article>
+          {% endfor %}
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Company Forecast Snapshot</div>
+              <div class="panel-subtitle">Side-by-side D+1 and standard horizon view for every supported company.</div>
+            </div>
+            <div class="panel-tags">
+              <span class="tag">{{ company_snapshot_rows|length }} companies</span>
+              <span class="tag tag-teal">selected: {{ symbol }}</span>
+            </div>
+          </div>
+
+          {% if company_snapshot_rows %}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Base close</th>
+                  <th>Standard D+1</th>
+                  <th>Std Δ</th>
+                  <th>Std horizon</th>
+                  <th>Quantum D+1</th>
+                  <th>Quant Δ</th>
+                  <th>Guardrail</th>
+                  <th>Availability</th>
+                  <th>Open</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in company_snapshot_rows %}
+                <tr class="{% if row.is_selected %}row-selected{% endif %}">
+                  <td><strong>{{ row.symbol }}</strong></td>
+                  <td>
+                    {% if row.base_close is not none %}
+                    ${{ '%.2f'|format(row.base_close) }}
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.standard_day_one is not none %}
+                    ${{ '%.2f'|format(row.standard_day_one) }}
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.standard_day_one_delta_pct is not none %}
+                    {{ '+' if row.standard_day_one_delta_pct >= 0 else '' }}{{ '%.2f'|format(row.standard_day_one_delta_pct) }}%
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.standard_horizon_end is not none %}
+                    ${{ '%.2f'|format(row.standard_horizon_end) }}
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.quantum_day_one is not none %}
+                    ${{ '%.2f'|format(row.quantum_day_one) }}
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.quantum_day_one_delta_pct is not none %}
+                    {{ '+' if row.quantum_day_one_delta_pct >= 0 else '' }}{{ '%.2f'|format(row.quantum_day_one_delta_pct) }}%
+                    {% else %}
+                    --
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.standard_constraint_applied %}
+                    yes{% if row.standard_return_cap_pct is not none %} ({{ '%.2f'|format(row.standard_return_cap_pct) }}%){% endif %}
+                    {% else %}
+                    no
+                    {% endif %}
+                  </td>
+                  <td>{{ row.availability }}</td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="{{ url_for('dashboard', symbol=row.symbol, extraction_date=selected_extraction_date, predict_type=selected_predict_type, reference_date=selected_reference_date, forecast_date_from=selected_forecast_date_from, forecast_date_to=selected_forecast_date_to, lookback=lookback, horizon_days=horizon_days, limit=row_limit) }}"
+                    >view</a>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="empty-state">No company snapshot is available.</div>
+          {% endif %}
+        </section>
+
+        <section class="panel panel-chart panel-chart-hero">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Six-Month Market Context</div>
+              <div class="panel-subtitle">
+                {% if historical_window %}
+                Observed closes from {{ historical_window.start_date }} to {{ historical_window.end_date }}, followed by standard and quantum forward paths.
+                {% else %}
+                Historical context unavailable for the current filter set.
+                {% endif %}
+              </div>
+            </div>
+            <div class="panel-tags">
+              <span class="tag">6 months</span>
+              <span class="tag tag-teal">normal vs quant</span>
+            </div>
+          </div>
+
+          {% if market_context_chart %}
+          <svg class="forecast-chart forecast-chart-hero" viewBox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" preserveAspectRatio="none" aria-label="Six-month market context chart">
+            {% for guide in market_context_chart.y_guides %}
+            <line x1="0" x2="{{ market_context_chart.width }}" y1="{{ guide.y }}" y2="{{ guide.y }}" class="chart-guide"></line>
+            <text x="8" y="{{ guide.y - 6 }}" class="chart-label">${{ '%.2f'|format(guide.value) }}</text>
+            {% endfor %}
+            <line x1="{{ market_context_chart.boundary_x }}" x2="{{ market_context_chart.boundary_x }}" y1="0" y2="{{ market_context_chart.height }}" class="chart-boundary"></line>
+            <polyline points="{{ market_context_chart.history_polyline }}" fill="none" stroke="{{ market_context_chart.history_color }}" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            {% for series in market_context_chart.forecast_series %}
+            <polyline points="{{ series.polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="3" stroke-dasharray="{{ series.dasharray }}" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            {% endfor %}
+            {% for label in market_context_chart.x_labels %}
+            <text x="{{ label.x }}" y="{{ market_context_chart.height - 6 }}" text-anchor="middle" class="chart-label">{{ label.label }}</text>
+            {% endfor %}
+          </svg>
+          <div class="legend-row">
+            <div class="legend-pill">
+              <span class="legend-swatch" style="background: #174b83"></span>
+              <span>historical close</span>
+            </div>
+            {% for series in market_context_chart.forecast_series %}
+            <div class="legend-pill">
+              <span class="legend-swatch" style="background: {{ series.color }}"></span>
+              <span>{{ series.name }}</span>
+              <strong>${{ '%.2f'|format(series.last_value) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty-state">No six-month market context chart is available.</div>
+          {% endif %}
+        </section>
+
+        <section class="comparison-grid">
+          {% if outlook_cards %}
+          {% for card in outlook_cards %}
+          <article class="panel scenario-panel scenario-panel-{{ card.predict_type }}">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">{{ card.title }}</div>
+                <div class="panel-subtitle">
+                  Base close ${{ '%.2f'|format(card.base_close) }} on {{ card.base_date }}
+                </div>
+              </div>
+              <div class="panel-tags">
+                <span class="tag">{{ card.predict_type }}</span>
+                <span class="tag {% if card.status_tone == 'positive' %}tag-teal{% else %}tag-amber{% endif %}">
+                  {% if card.horizon_delta_abs >= 0 %}gain bias{% else %}loss bias{% endif %}
+                </span>
+              </div>
+            </div>
+
+            <div class="scenario-topline">
+              <div>
+                <div class="metric-label">D+1 estimate</div>
+                <div class="prediction-hero">${{ '%.2f'|format(card.day_one_close) }}</div>
+                <div class="prediction-line">{{ card.day_one_date }}</div>
+              </div>
+              <div class="delta-chip {% if card.day_one_delta_abs >= 0 %}delta-chip-positive{% else %}delta-chip-negative{% endif %}">
+                {{ '+' if card.day_one_delta_abs >= 0 else '' }}${{ '%.2f'|format(card.day_one_delta_abs) }}
+                <span>({{ '+' if card.day_one_delta_pct >= 0 else '' }}{{ '%.2f'|format(card.day_one_delta_pct) }}%)</span>
+              </div>
+            </div>
+
+            {% if card.live_interval %}
+            <div class="scenario-band">
+              Live standard interval:
+              ${{ '%.2f'|format(card.live_interval.lower) }} to ${{ '%.2f'|format(card.live_interval.upper) }}
+            </div>
+            {% endif %}
+
+            <dl class="metric-list scenario-metric-list">
+              <div><dt>Horizon end</dt><dd>${{ '%.2f'|format(card.horizon_end_close) }} on {{ card.horizon_end_date }}</dd></div>
+              <div><dt>Projected result</dt><dd>{{ '+' if card.horizon_delta_abs >= 0 else '' }}${{ '%.2f'|format(card.horizon_delta_abs) }} ({{ '+' if card.horizon_delta_pct >= 0 else '' }}{{ '%.2f'|format(card.horizon_delta_pct) }}%)</dd></div>
+              <div><dt>Best gain path</dt><dd>${{ '%.2f'|format(card.best_close) }} on {{ card.best_date }} ({{ '+' if card.best_delta_pct >= 0 else '' }}{{ '%.2f'|format(card.best_delta_pct) }}%)</dd></div>
+              <div><dt>Worst loss path</dt><dd>${{ '%.2f'|format(card.worst_close) }} on {{ card.worst_date }} ({{ '+' if card.worst_delta_pct >= 0 else '' }}{{ '%.2f'|format(card.worst_delta_pct) }}%)</dd></div>
+            </dl>
+
+            <div class="scenario-explain">
+              <div class="scenario-explain-title">How it was acquired</div>
+              <p>{{ card.acquisition_summary }}</p>
+              <ul class="rule-list">
+                {% for item in card.acquisition_points %}
+                <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </article>
+          {% endfor %}
+          {% else %}
+          <article class="panel">
+            <div class="empty-state">No standard and quantum comparison is available for the current filter set.</div>
+          </article>
+          {% endif %}
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Forecast Rows</div>
+                <div class="panel-subtitle">Read-only preview of the rows currently returned to the client.</div>
+              </div>
+              <span class="tag">{{ forecast_rows|length }} rows</span>
+            </div>
+
+            {% if forecast_rows %}
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Close</th>
+                    <th>Direction</th>
+                    <th>Proxy</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in forecast_rows %}
+                  <tr>
+                    <td>{{ row.forecast_date }}</td>
+                    <td>{{ row.predict_type }}</td>
+                    <td>${{ '%.2f'|format(row.predicted_close) }}</td>
+                    <td>{{ row.predicted_direction_label }}</td>
+                    <td>{{ 'yes' if row.is_price_proxy else 'no' }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <div class="empty-state">No forecast rows available.</div>
+            {% endif %}
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Serving Rules</div>
+                <div class="panel-subtitle">Operational constraints enforced by the product.</div>
+              </div>
+            </div>
+            <ul class="rule-list">
+              <li>Standard users can only inspect and filter data.</li>
+              <li>No training artifact can be edited from this interface.</li>
+              <li>No raw, processed, or model file can be uploaded or replaced here.</li>
+              <li>Quantum inference is served only from batch materialized data.</li>
+              <li>Live requests always use the classical local model.</li>
+            </ul>
+          </article>
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Prediction Methods</div>
+                <div class="panel-subtitle">The client view exposes both serving paths, but only one can run live.</div>
+              </div>
+            </div>
+
+            <div class="method-stack">
+              {% for item in method_summary %}
+              <section class="method-card">
+                <div class="method-head">
+                  <div class="method-title">{{ item.title }}</div>
+                  <div class="tag {% if item.predict_type == 'quant' %}tag-amber{% else %}tag-teal{% endif %}">{{ item.availability }}</div>
+                </div>
+                <p class="method-copy">{{ item.summary }}</p>
+                <ul class="rule-list">
+                  {% for limitation in item.limitations %}
+                  <li>{{ limitation }}</li>
+                  {% endfor %}
+                </ul>
+              </section>
+              {% endfor %}
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Data Usage</div>
+                <div class="panel-subtitle">Training and serving context available to the end user.</div>
+              </div>
+            </div>
+
+            <dl class="metric-list">
+              <div><dt>Raw source</dt><dd>{{ data_usage_summary.raw_market_source }}</dd></div>
+              <div><dt>Target</dt><dd>{{ data_usage_summary.training_target }}</dd></div>
+              <div><dt>Target column</dt><dd>{{ data_usage_summary.target_column }}</dd></div>
+              <div><dt>Lookback</dt><dd>{{ data_usage_summary.lookback }}</dd></div>
+              <div><dt>Horizon</dt><dd>{{ data_usage_summary.forecast_horizon_days }}</dd></div>
+              <div><dt>Forecast dataset</dt><dd>{{ data_usage_summary.processed_forecast_dataset }}</dd></div>
+              <div><dt>Forecasts ready</dt><dd>{{ 'yes' if data_usage_summary.materialized_forecasts_available else 'no' }}</dd></div>
+              <div><dt>Symbols</dt><dd>{{ data_usage_summary.supported_symbols|join(', ') }}</dd></div>
+            </dl>
+
+            <ul class="rule-list">
+              {% for note in data_usage_summary.notes %}
+              <li>{{ note }}</li>
+              {% endfor %}
+            </ul>
+          </article>
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel panel-chart">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Keras Training Curve</div>
+                <div class="panel-subtitle">
+                  {% if training_summary and training_summary.keras %}
+                  Extraction {{ training_summary.keras.extraction_date }} | Trained {{ training_summary.keras.trained_at }}
+                  {% else %}
+                  Training history unavailable
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+
+            {% if training_chart %}
+            <svg class="forecast-chart" viewBox="0 0 {{ training_chart.width }} {{ training_chart.height }}" preserveAspectRatio="none" aria-label="Training chart">
+              {% if training_chart.loss_polyline %}
+              <polyline points="{{ training_chart.loss_polyline }}" fill="none" stroke="#174b83" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+              {% endif %}
+              {% if training_chart.validation_polyline %}
+              <polyline points="{{ training_chart.validation_polyline }}" fill="none" stroke="#b45f06" stroke-width="3" stroke-dasharray="8 5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+              {% endif %}
+            </svg>
+            <div class="legend-row">
+              <div class="legend-pill"><span class="legend-swatch" style="background:#174b83"></span><span>loss</span></div>
+              <div class="legend-pill"><span class="legend-swatch" style="background:#b45f06"></span><span>val_loss</span></div>
+            </div>
+            {% else %}
+            <div class="empty-state">No classical training history available.</div>
+            {% endif %}
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Training Data Snapshot</div>
+                <div class="panel-subtitle">Latest read-only metrics for the selected asset.</div>
+              </div>
+            </div>
+
+            <div class="training-grid">
+              <section class="training-card">
+                <div class="training-title">Classical Keras</div>
+                {% if training_summary and training_summary.keras %}
+                <dl class="metric-list">
+                  <div><dt>Best epoch</dt><dd>{{ training_summary.keras.best_epoch }}</dd></div>
+                  <div><dt>Epochs ran</dt><dd>{{ training_summary.keras.epochs_ran }}</dd></div>
+                  <div><dt>Validation MAE</dt><dd>{{ '%.2f'|format(training_summary.keras.validation_metrics.get('mae', 0)) }}</dd></div>
+                  <div><dt>Validation RMSE</dt><dd>{{ '%.2f'|format(training_summary.keras.validation_metrics.get('rmse', 0)) }}</dd></div>
+                  <div><dt>Test MAE</dt><dd>{{ '%.2f'|format(training_summary.keras.test_metrics.get('mae', 0)) }}</dd></div>
+                  <div><dt>Rows</dt><dd>{{ training_summary.keras.row_count }}</dd></div>
+                </dl>
+                {% else %}
+                <div class="empty-inline">No classical training summary found.</div>
+                {% endif %}
+              </section>
+
+              <section class="training-card">
+                <div class="training-title">Quantum Batch Model</div>
+                {% if training_summary and training_summary.quantum %}
+                <dl class="metric-list">
+                  <div><dt>Backend</dt><dd>{{ training_summary.quantum.backend_name }}</dd></div>
+                  <div><dt>Mode</dt><dd>{{ training_summary.quantum.execution_mode }}</dd></div>
+                  <div><dt>Qubits</dt><dd>{{ training_summary.quantum.num_qubits }}</dd></div>
+                  <div><dt>Val Accuracy</dt><dd>{{ '%.2f'|format((training_summary.quantum.validation_metrics.get('accuracy', 0) or 0) * 100) }}%</dd></div>
+                  <div><dt>Val F1</dt><dd>{{ '%.2f'|format(training_summary.quantum.validation_metrics.get('f1', 0) or 0) }}</dd></div>
+                  <div><dt>Optimizer</dt><dd>{{ training_summary.quantum.optimizer_name }}</dd></div>
+                </dl>
+                {% else %}
+                <div class="empty-inline">No quantum training summary found.</div>
+                {% endif %}
+              </section>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
