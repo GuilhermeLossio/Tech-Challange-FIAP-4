@@ -1,16 +1,42 @@
 <div align="center">
 
-# Tech Challenge Phase 4
-## Stock Price Forecasting with LSTM and Offline Quantum Comparison
+# Hybrid Classical-Quantum Stock Forecasting
+## Semiconductor Equities · LSTM + Qiskit + FastAPI
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)](https://tensorflow.org)
+[![Qiskit](https://img.shields.io/badge/Qiskit-IBM%20Quantum-6929C4?style=flat-square&logo=ibm&logoColor=white)](https://qiskit.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-Baseline forecasting pipeline for semiconductor stocks using classical LSTM regression, plus offline quantum comparison experiments and materialized future forecasts.
+Production-grade forecasting pipeline for semiconductor stocks — classical Keras LSTM baseline
+versus offline IBM Quantum (Qiskit) experiments — served via FastAPI with a promotion policy
+for safe, reproducible model serving.
+
+**Universe:** `NVDA` · `AMD` · `TSM` · `ASML` · `QCOM` | **Target:** next-day close (D+1)
 
 </div>
+
+---
+
+## Why this project
+
+Semiconductor equities are among the most volatile and strategically relevant assets in the
+current market cycle. This repository explores whether quantum-enhanced feature encoding can
+improve next-day closing-price regression beyond a strong classical LSTM baseline.
+
+The classical path is fully production-ready: ingestion, feature engineering, training,
+promotion policy, and FastAPI serving. The quantum path runs offline via IBM Quantum (Qiskit),
+and its materialized forecasts are served alongside classical predictions through the same API
+endpoint — enabling direct, apples-to-apples comparison without live quantum inference latency.
+
+**Key design decisions:**
+- Clean architecture (domain / application / infrastructure) keeps quantum and classical paths
+  fully decoupled and independently testable.
+- A promotion policy (`models/serving_promotions.json`) gates which artifacts reach production,
+  preventing degraded or partially-materialized models from being served.
+- All forecast partitions are immutable and addressable by `extraction_date`, ensuring
+  reproducibility across runs.
 
 ---
 
@@ -18,6 +44,7 @@ Baseline forecasting pipeline for semiconductor stocks using classical LSTM regr
 
 | Section | Description |
 |---|---|
+| [Why this project](#why-this-project) | Motivation and key design decisions |
 | [About](#about) | Scope and current implementation status |
 | [Architecture](#architecture) | Project layers and data flow |
 | [Repository Structure](#repository-structure) | Actual folders and key files |

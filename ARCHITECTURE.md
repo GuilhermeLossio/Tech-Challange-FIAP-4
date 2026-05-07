@@ -2,6 +2,15 @@
 
 > Detailed technical documentation of the architecture, design patterns, engineering decisions, and news sentiment integration for the multi-asset semiconductor LSTM forecasting system.
 
+> **Implementation status notice**
+> This document describes both the current implementation and the planned roadmap.
+> Sections marked `[NEW]` — including the News Intelligence Layer, FinBERT sentiment
+> pipeline, feature fusion, and enriched prediction endpoints — represent the next
+> delivery stage and are **not yet active in production**. The currently deployed API
+> and its active endpoints are described in the [README](README.md).
+> The CI/CD pipeline documented here reflects the target design; no `.github/workflows/`
+> is committed in the current snapshot.
+
 ---
 
 ## Table of Contents
@@ -759,6 +768,8 @@ enriched_predictor_service = build_enriched_predictor_service()
 ---
 
 ## CI/CD Pipeline
+
+> **Current status:** This section describes the intended CI/CD blueprint. No `.github/workflows/` pipeline is committed in the current repository snapshot; the validated quality flow is local and documented in the README.
 
 ```
 push / pull_request
