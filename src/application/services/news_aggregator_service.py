@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from typing import Callable
@@ -31,6 +31,7 @@ DEFAULT_SOURCE_WEIGHTS: dict[str, float] = {
 SUPPORTED_AGGREGATION_METHODS = frozenset({"weighted_mean", "mean", "median"})
 
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d")
+_MIN_PUBLISHED_AT_UTC = datetime.min.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -215,7 +216,7 @@ class NewsAggregatorService:
 
         for signal in sorted(
             signals,
-            key=lambda item: item.published_at_utc or datetime.min,
+            key=lambda item: self._published_sort_key(item.published_at_utc),
         ):
             dedup_key = (
                 signal.symbol.upper(),
@@ -246,19 +247,32 @@ class NewsAggregatorService:
         normalised = " ".join(normalised.split())
         return normalised[:80]
 
-    def _published_bucket(self, published_at_utc: datetime | None) -> str | None:
+    @staticmethod
+    def _normalize_published_at_utc(
+        published_at_utc: datetime | None,
+    ) -> datetime | None:
         if published_at_utc is None:
+            return None
+        if published_at_utc.tzinfo is None:
+            return published_at_utc.replace(tzinfo=timezone.utc)
+        return published_at_utc.astimezone(timezone.utc)
+
+    @classmethod
+    def _published_sort_key(cls, published_at_utc: datetime | None) -> datetime:
+        return cls._normalize_published_at_utc(published_at_utc) or _MIN_PUBLISHED_AT_UTC
+
+    def _published_bucket(self, published_at_utc: datetime | None) -> str | None:
+        normalized = self._normalize_published_at_utc(published_at_utc)
+        if normalized is None:
             return None
 
         bucket_seconds = int(self._dedup_window.total_seconds())
         if bucket_seconds <= 0:
-            return published_at_utc.replace(microsecond=0).isoformat()
+            return normalized.replace(microsecond=0).isoformat()
 
-        timestamp = int(published_at_utc.timestamp())
+        timestamp = int(normalized.timestamp())
         bucket_start = timestamp - (timestamp % bucket_seconds)
-        return datetime.fromtimestamp(
-            bucket_start, tz=published_at_utc.tzinfo
-        ).isoformat()
+        return datetime.fromtimestamp(bucket_start, tz=timezone.utc).isoformat()
 
     @staticmethod
     def _normalize_date(value: date | str) -> date:

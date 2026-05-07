@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.dependencies import get_future_prediction_service, get_metrics_service
 from src.api.dependencies import get_standard_predictor_service
+from src.api.serving_defaults import resolve_latest_api_extraction_date
 from src.api.schemas.data_usage_response import DataUsageResponse
 from src.api.schemas.method_response import MethodCatalogItemResponse, MethodCatalogResponse
 from src.application.services.api_metrics_service import ApiMetricsService
@@ -18,11 +19,16 @@ router = APIRouter(tags=["metadata"])
 def get_methods(
     metrics_service: ApiMetricsService = Depends(get_metrics_service),
     predictor_service: StandardPredictorService = Depends(get_standard_predictor_service),
+    future_prediction_service: FuturePredictionService = Depends(get_future_prediction_service),
 ) -> MethodCatalogResponse:
     route_name = "methods"
     metrics_service.record_request(route_name)
     try:
         registry = predictor_service.describe_registry()
+        extraction_dates = resolve_latest_api_extraction_date(
+            predictor_service=predictor_service,
+            future_prediction_service=future_prediction_service,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         metrics_service.record_error(route_name)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -64,7 +70,8 @@ def get_methods(
             ),
         ],
         supported_symbols=registry["supported_symbols"],
-        latest_extraction_date=registry["latest_extraction_date"],
+        latest_extraction_date=extraction_dates.latest_extraction_date,
+        latest_trained_extraction_date=extraction_dates.latest_trained_extraction_date,
     )
 
 
@@ -78,6 +85,10 @@ def get_data_usage(
     metrics_service.record_request(route_name)
     try:
         registry = predictor_service.describe_registry()
+        extraction_dates = resolve_latest_api_extraction_date(
+            predictor_service=predictor_service,
+            future_prediction_service=future_prediction_service,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         metrics_service.record_error(route_name)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -89,11 +100,14 @@ def get_data_usage(
         lookback=60,
         forecast_horizon_days=30,
         supported_symbols=registry["supported_symbols"],
-        latest_extraction_date=registry["latest_extraction_date"],
+        latest_extraction_date=extraction_dates.latest_extraction_date,
+        latest_trained_extraction_date=extraction_dates.latest_trained_extraction_date,
         processed_forecast_dataset="data/processed/future_predict",
         online_quantum_inference_enabled=False,
         materialized_forecasts_available=future_prediction_service.has_materialized_forecasts(),
         notes=[
+            "latest_extraction_date is the newest partition currently aligned between online prediction serving and materialized forecast serving.",
+            "latest_trained_extraction_date is the newest training partition discovered locally, even when it is not yet exposed as the API default.",
             "POST /predict uses only the classical LSTM model.",
             "GET /forecasts/{symbol} can return both `normal` and `quant` rows when they were materialized offline.",
             "Quantum predictions served by the API come from stored parquet data and never consume IBM Quantum tokens at request time.",

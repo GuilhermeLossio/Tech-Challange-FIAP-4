@@ -59,6 +59,69 @@ class FuturePredictionService:
         ]
         return tuple(sorted(set(symbols)))
 
+    def list_available_extraction_dates(
+        self,
+        *,
+        symbol: str,
+        lookback: int | None = None,
+        horizon_days: int | None = None,
+    ) -> tuple[date, ...]:
+        symbol_root = self._build_symbol_root(
+            symbol=symbol,
+            lookback=lookback or self._lookback,
+            horizon_days=horizon_days or self._horizon_days,
+        )
+        if not symbol_root.exists():
+            return tuple()
+
+        candidates: list[date] = []
+        for partition in symbol_root.glob("extraction_date=*"):
+            token = partition.name.split("=", 1)[-1]
+            try:
+                candidates.append(datetime.strptime(token, "%Y-%m-%d").date())
+            except ValueError:
+                continue
+        return tuple(sorted(set(candidates)))
+
+    def resolve_effective_extraction_date(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date | None = None,
+        lookback: int | None = None,
+        horizon_days: int | None = None,
+    ) -> date:
+        candidates = self.list_available_extraction_dates(
+            symbol=symbol,
+            lookback=lookback,
+            horizon_days=horizon_days,
+        )
+        if not candidates:
+            symbol_root = self._build_symbol_root(
+                symbol=symbol,
+                lookback=lookback or self._lookback,
+                horizon_days=horizon_days or self._horizon_days,
+            )
+            raise FileNotFoundError(
+                f"No extraction_date partitions were found under {symbol_root}."
+            )
+
+        if requested_extraction_date is None:
+            return candidates[-1]
+
+        eligible = [candidate for candidate in candidates if candidate <= requested_extraction_date]
+        if not eligible:
+            symbol_root = self._build_symbol_root(
+                symbol=symbol,
+                lookback=lookback or self._lookback,
+                horizon_days=horizon_days or self._horizon_days,
+            )
+            raise FileNotFoundError(
+                "No materialized future prediction extraction_date is available on or before "
+                f"{requested_extraction_date.isoformat()} under {symbol_root}."
+            )
+        return eligible[-1]
+
     def load_forecasts(
         self,
         *,
@@ -158,13 +221,10 @@ class FuturePredictionService:
         lookback: int,
         horizon_days: int,
     ) -> Path:
-        symbol_root = (
-            self._processed_root_dir
-            / "future_predict"
-            / f"source={self._source}"
-            / f"symbol={symbol.strip().upper()}"
-            / f"lookback={lookback}"
-            / f"horizon_days={horizon_days}"
+        symbol_root = self._build_symbol_root(
+            symbol=symbol,
+            lookback=lookback,
+            horizon_days=horizon_days,
         )
         if not symbol_root.exists():
             raise FileNotFoundError(
@@ -172,8 +232,14 @@ class FuturePredictionService:
                 "Run `python scripts/generate_forecast.py` first."
             )
 
-        selected_extraction_date = extraction_date or self._resolve_latest_extraction_date(
-            symbol_root
+        selected_extraction_date = (
+            extraction_date
+            or self.resolve_effective_extraction_date(
+                symbol=symbol,
+                requested_extraction_date=None,
+                lookback=lookback,
+                horizon_days=horizon_days,
+            )
         )
         extraction_root = symbol_root / f"extraction_date={selected_extraction_date.isoformat()}"
         if not extraction_root.exists():
@@ -194,18 +260,18 @@ class FuturePredictionService:
             raise FileNotFoundError(f"Future prediction parquet not found: {dataset_path}")
         return dataset_path
 
-    @staticmethod
-    def _resolve_latest_extraction_date(symbol_root: Path) -> date:
-        candidates: list[date] = []
-        for partition in symbol_root.glob("extraction_date=*"):
-            token = partition.name.split("=", 1)[-1]
-            try:
-                candidates.append(datetime.strptime(token, "%Y-%m-%d").date())
-            except ValueError:
-                continue
-
-        if not candidates:
-            raise FileNotFoundError(
-                f"No extraction_date partitions were found under {symbol_root}."
-            )
-        return max(candidates)
+    def _build_symbol_root(
+        self,
+        *,
+        symbol: str,
+        lookback: int,
+        horizon_days: int,
+    ) -> Path:
+        return (
+            self._processed_root_dir
+            / "future_predict"
+            / f"source={self._source}"
+            / f"symbol={symbol.strip().upper()}"
+            / f"lookback={lookback}"
+            / f"horizon_days={horizon_days}"
+        )

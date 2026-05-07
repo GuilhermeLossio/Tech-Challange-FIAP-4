@@ -13,6 +13,7 @@ from src.application.services.forecast_guardrails import (
     apply_standard_forecast_guardrail,
     clamp_interval_to_guardrail_band,
 )
+from src.application.services.model_promotion_registry import ModelPromotionRegistry
 
 try:
     import tensorflow as tf
@@ -73,16 +74,23 @@ class StandardPredictorService:
         lookback: int = 60,
         model_name_prefix: str = "lstm",
     ) -> None:
-        self._raw_root_dir = raw_root_dir
-        self._processed_root_dir = processed_root_dir
-        self._models_root_dir = models_root_dir
+        self._raw_root_dir = raw_root_dir.resolve()
+        self._processed_root_dir = processed_root_dir.resolve()
+        self._models_root_dir = models_root_dir.resolve()
         self._source = source
         self._target_column = target_column
         self._lookback = lookback
         self._model_name_prefix = model_name_prefix
         self._model_cache: dict[str, Any] = {}
+        self._promotion_registry = ModelPromotionRegistry(
+            models_root_dir=self._models_root_dir,
+        )
 
     def get_supported_symbols(self) -> tuple[str, ...]:
+        promoted_symbols = self._promotion_registry.list_promoted_symbols()
+        if promoted_symbols:
+            return promoted_symbols
+
         symbols: set[str] = set()
         manifests_root = self._models_root_dir / "manifests"
         if manifests_root.exists():
@@ -113,16 +121,7 @@ class StandardPredictorService:
         return tuple(sorted(symbols))
 
     def get_latest_extraction_date(self) -> date:
-        manifests_root = self._models_root_dir / "manifests"
-        candidates: list[date] = []
-        if manifests_root.exists():
-            for partition in manifests_root.glob("extraction_date=*"):
-                token = partition.name.split("=", 1)[-1]
-                try:
-                    candidates.append(datetime.strptime(token, "%Y-%m-%d").date())
-                except ValueError:
-                    continue
-
+        candidates = self._list_available_extraction_dates()
         if not candidates:
             raise FileNotFoundError(
                 "No Keras training manifests were found. "
@@ -134,17 +133,35 @@ class StandardPredictorService:
         latest_extraction_date = self.get_latest_extraction_date()
         supported_symbols = self.get_supported_symbols()
         default_symbol = "NVDA" if "NVDA" in supported_symbols else supported_symbols[0]
-        resolution = self._resolve_model_resolution(
+        resolution = self._resolve_serving_model_resolution(
             symbol=default_symbol,
-            extraction_date=latest_extraction_date,
+            requested_extraction_date=None,
         )
         return {
             "latest_extraction_date": latest_extraction_date.isoformat(),
+            "default_serving_extraction_date": resolution.extraction_date.isoformat(),
             "supported_symbols": list(supported_symbols),
             "default_model_name": resolution.model_name,
             "default_model_path": str(resolution.model_local_path),
             "online_quantum_inference_enabled": False,
+            "promotion_policy_enabled": self._promotion_registry.exists(),
+            "promotion_policy_path": (
+                str(self._promotion_registry.policy_path)
+                if self._promotion_registry.exists()
+                else None
+            ),
         }
+
+    def resolve_serving_extraction_date(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date | None = None,
+    ) -> date:
+        return self._resolve_serving_model_resolution(
+            symbol=symbol.strip().upper(),
+            requested_extraction_date=requested_extraction_date,
+        ).extraction_date
 
     def predict(
         self,
@@ -157,7 +174,11 @@ class StandardPredictorService:
         self._ensure_tensorflow_available()
 
         normalized_symbol = symbol.strip().upper()
-        selected_extraction_date = self._resolve_effective_extraction_date(extraction_date)
+        resolution = self._resolve_serving_model_resolution(
+            symbol=normalized_symbol,
+            requested_extraction_date=extraction_date,
+        )
+        selected_extraction_date = resolution.extraction_date
         input_mode = "client_prices"
         requested_reference_date = reference_date.isoformat() if reference_date else None
         resolved_window_start_date: str | None = None
@@ -187,10 +208,6 @@ class StandardPredictorService:
                 raise ValueError("`prices` must contain only finite numeric values.")
 
         scaler_metadata = self._load_scaler_metadata(
-            symbol=normalized_symbol,
-            extraction_date=selected_extraction_date,
-        )
-        resolution = self._resolve_model_resolution(
             symbol=normalized_symbol,
             extraction_date=selected_extraction_date,
         )
@@ -361,20 +378,51 @@ class StandardPredictorService:
             window["date"].iloc[-1].strftime("%Y-%m-%d"),
         )
 
+    def _resolve_serving_model_resolution(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date | None,
+    ) -> ModelResolution:
+        promoted_resolution = self._find_promoted_model_resolution(
+            symbol=symbol,
+            requested_extraction_date=requested_extraction_date,
+        )
+        if promoted_resolution is not None:
+            return promoted_resolution
+        if self._promotion_registry.exists():
+            if requested_extraction_date is None:
+                requested_window = " for the current serving default"
+            else:
+                requested_window = (
+                    " on or before "
+                    f"extraction_date={requested_extraction_date.isoformat()}"
+                )
+            raise FileNotFoundError(
+                f"No approved serving artifact was found for symbol {symbol!r}"
+                f"{requested_window} in {self._promotion_registry.policy_path}."
+            )
+
+        resolution = self._find_best_manifest_model_resolution(
+            symbol=symbol,
+            requested_extraction_date=requested_extraction_date,
+        )
+        if resolution is not None:
+            return resolution
+
+        selected_extraction_date = self._resolve_effective_extraction_date(
+            requested_extraction_date
+        )
+        return self._resolve_model_resolution(
+            symbol=symbol,
+            extraction_date=selected_extraction_date,
+        )
+
     def _resolve_effective_extraction_date(
         self,
         requested_extraction_date: date | None,
     ) -> date:
-        manifests_root = self._models_root_dir / "manifests"
-        candidates: list[date] = []
-        if manifests_root.exists():
-            for partition in manifests_root.glob("extraction_date=*"):
-                token = partition.name.split("=", 1)[-1]
-                try:
-                    candidates.append(datetime.strptime(token, "%Y-%m-%d").date())
-                except ValueError:
-                    continue
-
+        candidates = self._list_available_extraction_dates()
         if not candidates:
             raise FileNotFoundError(
                 "No Keras training manifests were found. "
@@ -392,6 +440,133 @@ class StandardPredictorService:
                 f"{requested_extraction_date.isoformat()}."
             )
         return eligible[-1]
+
+    def _find_promoted_model_resolution(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date | None,
+    ) -> ModelResolution | None:
+        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
+        for promotion in self._promotion_registry.list_candidates(
+            symbol=symbol,
+            requested_extraction_date=requested_extraction_date,
+        ):
+            manifest_path = promotion.manifest_local_path
+            model_local_path = promotion.model_local_path
+            if not manifest_path.exists() or not model_local_path.exists():
+                continue
+            if model_local_path.name.lower() != expected_model_name.lower():
+                continue
+
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            request_payload = payload.get("request", {})
+            if (
+                request_payload.get("source") != self._source
+                or request_payload.get("target_column") != self._target_column
+                or int(request_payload.get("lookback", self._lookback)) != self._lookback
+            ):
+                continue
+
+            asset_payload = next(
+                (
+                    asset
+                    for asset in payload.get("assets", [])
+                    if str(asset.get("symbol", "")).upper() == symbol.upper()
+                ),
+                None,
+            )
+            if asset_payload is None:
+                continue
+
+            immutable_model_path = self._resolve_manifest_model_path(
+                asset_payload=asset_payload,
+                expected_model_name=expected_model_name,
+                require_immutable_path=True,
+            )
+            if immutable_model_path is None:
+                continue
+            if immutable_model_path.resolve() != model_local_path.resolve():
+                continue
+
+            return ModelResolution(
+                symbol=symbol.upper(),
+                extraction_date=promotion.extraction_date,
+                model_name=model_local_path.stem,
+                model_local_path=model_local_path,
+                training_manifest_local_path=manifest_path,
+                training_generated_at_utc=str(payload.get("generated_at_utc")),
+                interval_width=self._resolve_interval_width(asset_payload),
+            )
+        return None
+
+    def _find_best_manifest_model_resolution(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date | None,
+    ) -> ModelResolution | None:
+        best_candidate: tuple[tuple[float, float, float, float, int], ModelResolution] | None = None
+        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
+        manifests_root = self._models_root_dir / "manifests"
+        if not manifests_root.exists():
+            return None
+
+        for extraction_date in self._list_available_extraction_dates():
+            if (
+                requested_extraction_date is not None
+                and extraction_date > requested_extraction_date
+            ):
+                continue
+
+            extraction_root = manifests_root / f"extraction_date={extraction_date.isoformat()}"
+            for manifest_path in extraction_root.glob("trained_at=*/keras_training_manifest.json"):
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                request_payload = payload.get("request", {})
+                if (
+                    request_payload.get("source") != self._source
+                    or request_payload.get("target_column") != self._target_column
+                    or int(request_payload.get("lookback", self._lookback)) != self._lookback
+                ):
+                    continue
+
+                asset_payload = next(
+                    (
+                        asset
+                        for asset in payload.get("assets", [])
+                        if str(asset.get("symbol", "")).upper() == symbol.upper()
+                    ),
+                    None,
+                )
+                if asset_payload is None:
+                    continue
+                model_local_path = self._resolve_manifest_model_path(
+                    asset_payload=asset_payload,
+                    expected_model_name=expected_model_name,
+                    require_immutable_path=True,
+                )
+                if model_local_path is None:
+                    continue
+
+                resolution = ModelResolution(
+                    symbol=symbol.upper(),
+                    extraction_date=extraction_date,
+                    model_name=model_local_path.stem,
+                    model_local_path=model_local_path,
+                    training_manifest_local_path=manifest_path,
+                    training_generated_at_utc=str(payload.get("generated_at_utc")),
+                    interval_width=self._resolve_interval_width(asset_payload),
+                )
+                candidate_score = self._score_regression_asset(
+                    asset_payload=asset_payload,
+                    manifest_path=manifest_path,
+                )
+                if best_candidate is None or candidate_score < best_candidate[0]:
+                    best_candidate = (candidate_score, resolution)
+
+        if best_candidate is None:
+            return None
+        return best_candidate[1]
 
     def _resolve_model_resolution(
         self,
@@ -428,12 +603,17 @@ class StandardPredictorService:
                         asset
                         for asset in payload.get("assets", [])
                         if str(asset.get("symbol", "")).upper() == symbol.upper()
-                        and Path(str(asset.get("model_local_path", ""))).name.lower()
-                        == expected_model_name.lower()
                     ),
                     None,
                 )
                 if asset_payload is None:
+                    continue
+                model_local_path = self._resolve_manifest_model_path(
+                    asset_payload=asset_payload,
+                    expected_model_name=expected_model_name,
+                    require_immutable_path=False,
+                )
+                if model_local_path is None:
                     continue
 
                 candidate_score = self._score_regression_asset(
@@ -450,12 +630,23 @@ class StandardPredictorService:
 
             if best_candidate is not None:
                 _, manifest_path, payload, asset_payload = best_candidate
+                model_local_path = self._resolve_manifest_model_path(
+                    asset_payload=asset_payload,
+                    expected_model_name=expected_model_name,
+                    require_immutable_path=False,
+                )
+                if model_local_path is None:
+                    raise FileNotFoundError(
+                        f"Manifest candidate for symbol {symbol!r} "
+                        f"and extraction_date={extraction_date.isoformat()} "
+                        "does not reference a usable model artifact."
+                    )
                 interval_width = self._resolve_interval_width(asset_payload)
                 return ModelResolution(
                     symbol=symbol.upper(),
                     extraction_date=extraction_date,
-                    model_name=Path(str(asset_payload["model_local_path"])).stem,
-                    model_local_path=Path(str(asset_payload["model_local_path"])),
+                    model_name=model_local_path.stem,
+                    model_local_path=model_local_path,
                     training_manifest_local_path=manifest_path,
                     training_generated_at_utc=str(payload.get("generated_at_utc")),
                     interval_width=interval_width,
@@ -477,6 +668,67 @@ class StandardPredictorService:
             f"Could not find a trained Keras model for symbol {symbol!r} "
             f"and extraction_date={extraction_date.isoformat()}."
         )
+
+    def _resolve_manifest_model_path(
+        self,
+        *,
+        asset_payload: dict[str, Any],
+        expected_model_name: str,
+        require_immutable_path: bool,
+    ) -> Path | None:
+        immutable_recorded_path = self._resolve_recorded_artifact_path(
+            asset_payload.get("immutable_model_local_path")
+        )
+        if (
+            immutable_recorded_path.name.lower() == expected_model_name.lower()
+            and immutable_recorded_path.exists()
+        ):
+            return immutable_recorded_path
+
+        recorded_path = self._resolve_recorded_artifact_path(
+            asset_payload.get("model_local_path")
+        )
+        if recorded_path.name.lower() != expected_model_name.lower():
+            return None
+
+        history_local_path = self._resolve_recorded_artifact_path(
+            asset_payload.get("history_local_path")
+        )
+        stable_candidate = history_local_path.parent / expected_model_name
+        if str(history_local_path).strip() and stable_candidate.exists():
+            return stable_candidate.resolve()
+
+        if require_immutable_path and self._is_published_alias_path(recorded_path):
+            return None
+        if recorded_path.exists():
+            return recorded_path.resolve()
+        return None
+
+    def _resolve_recorded_artifact_path(self, raw_path: object) -> Path:
+        token = str(raw_path).strip() if raw_path is not None else ""
+        if not token:
+            return Path()
+        path = Path(token).expanduser()
+        if not path.is_absolute():
+            path = self._models_root_dir / path
+        return path.resolve()
+
+    def _is_published_alias_path(self, model_path: Path) -> bool:
+        if not model_path.parts:
+            return False
+        return model_path.parent == self._models_root_dir
+
+    def _list_available_extraction_dates(self) -> list[date]:
+        manifests_root = self._models_root_dir / "manifests"
+        candidates: list[date] = []
+        if manifests_root.exists():
+            for partition in manifests_root.glob("extraction_date=*"):
+                token = partition.name.split("=", 1)[-1]
+                try:
+                    candidates.append(datetime.strptime(token, "%Y-%m-%d").date())
+                except ValueError:
+                    continue
+        return sorted(set(candidates))
 
     def _load_model(self, model_path: Path) -> Any:
         cache_key = str(model_path.resolve())

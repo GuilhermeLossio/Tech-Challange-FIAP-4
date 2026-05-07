@@ -129,6 +129,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -166,6 +168,8 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+.idea/
+.vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -187,3 +191,33 @@ data/processed/**
 !data/processed/.gitkeep
 models/**
 !models/.gitkeep
+
+# Local OS/editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local runtime artifacts
+*.sqlite
+*.sqlite3
+*.db
+*.log.*
+
+# ML/data artifacts that should not be published accidentally
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.npy
+*.npz
+*.keras
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.dill
+*.model
+*.onnx
+*.pt
+*.pth

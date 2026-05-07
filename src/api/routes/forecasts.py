@@ -5,9 +5,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.dependencies import get_future_predictions_use_case, get_metrics_service
+from src.api.dependencies import get_future_prediction_service, get_future_predictions_use_case, get_metrics_service
+from src.api.dependencies import get_standard_predictor_service
+from src.api.serving_defaults import resolve_symbol_default_forecast_extraction_date
 from src.api.schemas.forecast_response import ForecastItemResponse, ForecastResponse
 from src.application.services.api_metrics_service import ApiMetricsService
+from src.application.services.future_prediction_service import FuturePredictionService
+from src.application.services.predictor_service import StandardPredictorService
 from src.application.use_cases.get_future_predictions import (
     GetFuturePredictionsRequest,
     GetFuturePredictionsUseCase,
@@ -28,15 +32,26 @@ def get_forecasts(
     horizon_days: int = Query(default=30, ge=1),
     limit: int | None = Query(default=None, ge=1),
     use_case: GetFuturePredictionsUseCase = Depends(get_future_predictions_use_case),
+    predictor_service: StandardPredictorService = Depends(get_standard_predictor_service),
+    future_prediction_service: FuturePredictionService = Depends(get_future_prediction_service),
     metrics_service: ApiMetricsService = Depends(get_metrics_service),
 ) -> ForecastResponse:
     route_name = "forecasts"
     metrics_service.record_request(route_name)
     try:
+        effective_extraction_date = extraction_date
+        if effective_extraction_date is None:
+            effective_extraction_date = resolve_symbol_default_forecast_extraction_date(
+                symbol=symbol,
+                predictor_service=predictor_service,
+                future_prediction_service=future_prediction_service,
+                lookback=lookback,
+                horizon_days=horizon_days,
+            )
         result = use_case.execute(
             GetFuturePredictionsRequest(
                 symbol=symbol,
-                extraction_date=extraction_date,
+                extraction_date=effective_extraction_date,
                 predict_type=predict_type,
                 forecast_date_from=forecast_date_from,
                 forecast_date_to=forecast_date_to,

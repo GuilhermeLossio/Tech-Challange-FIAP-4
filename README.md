@@ -1,833 +1,336 @@
 <div align="center">
 
-# 📈 Tech Challenge Phase 4
-## Stock Price Forecasting with LSTM Neural Networks
+# Tech Challenge Phase 4
+## Stock Price Forecasting with LSTM and Offline Quantum Comparison
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)](https://tensorflow.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/features/actions)
 
-> End-to-end deep learning solution for semiconductor stock forecasting with LSTM models, multi-asset context, and optional news sentiment enrichment.
-
-**Primary asset:** `NVDA` · **Multi-asset coverage:** `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` · **Period:** 2000 -> last completed fiscal year
+Baseline forecasting pipeline for semiconductor stocks using classical LSTM regression, plus offline quantum comparison experiments and materialized future forecasts.
 
 </div>
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 | Section | Description |
 |---|---|
-| [About](#-about-the-project) | Academic context, scope, and forecasting modes |
-| [Architecture](#-system-architecture) | System layers, news intelligence, and data flow |
-| [Technologies](#-technologies) | Core stack, NLP, and external integrations |
-| [Folder Structure](#-folder-structure) | Project layout and main modules |
-| [Quickstart](#-quickstart) | Installation, environment, and execution |
-| [Data Pipeline](#-data-pipeline) | Multi-asset collection, preprocessing, sentiment fusion |
-| [LSTM Model](#-lstm-model) | Baseline and enriched model variants |
-| [Evaluation](#-evaluation-metrics) | MAE, RMSE, MAPE, and comparison criteria |
-| [API Reference](#-api-reference) | Standard and enriched endpoints |
-| [Docker](#-docker--deployment) | Build, compose, and environment variables |
-| [Monitoring](#-monitoring) | Metrics, alerting, and enriched-path observability |
-| [Software Engineering](#-software-engineering) | Patterns, SOLID, tests, CI/CD |
-| [Results](#-results) | Baseline vs enriched benchmarks |
-| [Author](#-author) | Contact information |
+| [About](#about) | Scope and current implementation status |
+| [Architecture](#architecture) | Project layers and data flow |
+| [Repository Structure](#repository-structure) | Actual folders and key files |
+| [Quickstart](#quickstart) | Local setup and execution |
+| [Pipeline](#pipeline) | Raw, refined, feature, training, and forecast generation |
+| [Promotion Policy](#promotion-policy) | Serving approval rules for classical models |
+| [API](#api) | Current FastAPI endpoints and behavior |
+| [Quality](#quality) | Tests, linting, and current CI status |
+| [Deployment](#deployment) | What is and is not committed today |
+| [Author](#author) | Project author |
 
 ---
 
-## 🎯 About the Project
+## About
 
-This project was developed as the capstone deliverable for **Tech Challenge Phase 4** of the Machine Learning Engineering postgraduate program. It covers the full machine learning lifecycle for financial time-series forecasting, from raw data ingestion to a production-ready API.
+This repository implements the Phase 4 Tech Challenge deliverable for the Machine Learning Engineering postgraduate program. The codebase covers:
 
-### Problem Statement
+- raw market-data ingestion from Yahoo Finance via `yfinance`
+- refined and feature dataset generation
+- classical Keras LSTM training for next-day closing-price regression
+- offline quantum comparison experiments
+- materialized future forecast datasets served through FastAPI and a read-only Flask frontend
 
-Predicting short-term stock closing prices is a sequence learning problem with non-linear temporal dependencies. Classical statistical methods such as ARIMA or ETS struggle to capture abrupt regime changes, delayed reactions, and cross-asset interactions. **LSTM networks** are well suited to this setting because they learn long-range dependencies through gated memory.
+Current implementation status:
 
-This project documents two prediction modes:
+- `POST /predict` is active and serves only approved classical artifacts.
+- `GET /forecasts/{symbol}` is active and serves precomputed `normal` and `quant` rows from parquet.
+- `POST /predict/enriched` and `GET /news/{symbol}` are placeholders and currently return `501 Not Implemented`.
+- Docker, Prometheus, Grafana, and GitHub Actions workflow files are not committed in the current repository snapshot.
 
-- **Standard forecasting:** price-only inference from historical closing prices
-- **Sentiment-enriched forecasting:** price inference augmented with live semiconductor news sentiment
-
-### Why Semiconductors?
-
-The semiconductor sector was selected based on three criteria:
-
-- **Signal richness:** high volatility creates expressive temporal patterns for sequence models
-- **Economic sensitivity:** the sector reacts quickly to macro cycles, AI demand, supply chain disruptions, and export restrictions
-- **Cross-company structure:** foundries, equipment vendors, and chip designers influence each other in observable ways
-
-### Scope
+Scope summary:
 
 | Item | Detail |
 |---|---|
-| Primary asset | NVDA - NVIDIA Corporation (NASDAQ) |
+| Primary asset | `NVDA` |
 | Multi-asset universe | `NVDA`, `AMD`, `TSM`, `ASML`, `QCOM` |
-| Historical window | 2000-01-01 -> last completed fiscal year end (for example, 2025-12-31 when collected during 2026) |
-| Prediction target | Next-day closing price (D+1) |
-| Data sources | Yahoo Finance via `yfinance` and live news feeds for enrichment |
-| Prediction modes | `standard` and `sentiment-enriched` |
-| Model variants | `lstm_nvda.keras` and `lstm_nvda_enriched.keras` |
+| Prediction target | Next-day close (`D+1`) |
+| Online serving | Classical LSTM only |
+| Offline forecast serving | `normal` and `quant` materialized rows |
+| Promotion policy | `models/serving_promotions.json` |
 
 ---
 
-## 🏗️ System Architecture
+## Architecture
 
-The system follows a **Clean Architecture** core with a dedicated **News Intelligence Layer** that enriches the forecasting pipeline with live market context. The technical architecture, ADRs, and implementation rationale are documented in [ARCHITECTURE.md](ARCHITECTURE.md).
-
-```text
-+----------------------------------------------------------+
-|                  API Layer  (FastAPI)                    |
-|       Input validation · Routing · Serialization         |
-+----------------------------------------------------------+
-|                 Application Layer                        |
-|        Use Cases · Services · Orchestration              |
-+----------------------------------------------------------+
-|                   Domain Layer                           |
-|       Entities · Interfaces · Business Rules             |
-+----------------------------------------------------------+
-|               Infrastructure Layer                       |
-|   yfinance · Keras · News APIs · Scrapers · Cache        |
-+----------------------------------------------------------+
-|              News Intelligence Layer                     |
-|   Aggregation · NLP Sentiment · Feature Enrichment       |
-+----------------------------------------------------------+
-```
-
-### End-to-End Data Flow
+The repository follows a layered structure centered on FastAPI, application services, and filesystem-backed datasets and model artifacts.
 
 ```text
-[Yahoo Finance] --------------------> [Financial Repositories]
-                                            |
-                                            v
-                                     [Preprocessor]
-                                            |
-                                            +----> [Standard LSTM Model] ----> [POST /predict]
-                                            |
-[NewsAPI / Alpha Vantage / RSS / Scrapers] -> [NewsAggregatorService]
-                                                     |
-                                                     v
-                                           [FinBERT / Fallback Analyzer]
-                                                     |
-                                                     v
-                                           [Feature Fusion (price + sentiment)]
-                                                     |
-                                                     v
-                                         [Enriched LSTM Model] ----> [POST /predict/enriched]
+FastAPI routes
+    -> use cases
+        -> application services
+            -> local processed/raw/model stores
+                -> parquet, json, keras, and dill artifacts
 ```
+
+Key modules:
+
+- `src/api/`: FastAPI entrypoint, routes, schemas, and dependency wiring.
+- `src/application/`: prediction services, forecast services, and training use cases.
+- `src/domain/`: entities and interfaces.
+- `src/infrastructure/`: configuration, storage, and repository adapters.
+- `src/front/`: read-only Flask frontend for inspection and demos.
+
+For the broader technical rationale, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## 🛠️ Technologies
+## Repository Structure
 
-### Core Stack
-
-| Category | Library / Service | Version | Purpose |
-|---|---|---|---|
-| Language | Python | 3.11 | Runtime |
-| Data collection | yfinance | 0.2.x | Historical OHLCV retrieval |
-| Data processing | pandas | 2.x | DataFrame manipulation |
-| Numerical computing | NumPy | 1.26 | Array operations |
-| Deep learning | TensorFlow / Keras | 2.15 | Baseline and enriched LSTM models |
-| Scaling | scikit-learn | 1.4 | Feature normalization |
-| API framework | FastAPI | 0.111 | REST API |
-| Client interface | Flask | 3.x | Read-only client view |
-| ASGI server | Uvicorn | 0.29 | Local and production serving |
-| Data validation | Pydantic | 2.x | Request and response schemas |
-| NLP sentiment | transformers / FinBERT | latest | Financial text sentiment scoring |
-| Fallback sentiment | TextBlob | latest | Lightweight fallback polarity scoring |
-| Containerization | Docker + Compose | 26.x | Deployment |
-| Monitoring | Prometheus + Grafana | latest | Observability |
-| Visualization | Matplotlib / Seaborn | 3.8 | Charts and diagnostics |
-
-### External Integrations
-
-| Integration | Type | Purpose |
-|---|---|---|
-| Yahoo Finance | Market data | Historical closing prices |
-| NewsAPI | REST API | Broad financial news coverage |
-| Alpha Vantage News | REST API | Stock-specific news signals |
-| Reuters RSS | Feed | Low-latency wire news |
-| Scraper sources | HTML/RSS | Additional sector commentary |
-
-### Development & Quality
-
-| Tool | Purpose |
-|---|---|
-| pytest + pytest-cov | Test suite and coverage |
-| black + flake8 | Code formatting and linting |
-| GitHub Actions | CI/CD pipeline |
-| pre-commit | Local quality gates |
-
-## 📁 Estrutura completa
+The current repository layout is:
 
 ```text
 tech-challenge-phase4/
-│
-├── 📁 .github/
-│   └── workflows/
-│       └── ci.yml
-│
-├── 📁 data/
-│   ├── raw/
-│   └── processed/
-│
-├── 📁 docs/                            
-│   ├── ARCHITECTURE.md 
-│   └── adr/ 
-│       ├── 001-lstm-vs-transformer.md
-│       └── 002-finbert-sentiment.md
-│
-├── 📓 notebooks/
-│   ├── 01_data_collection.ipynb
-│   ├── 02_preprocessing.ipynb
-│   ├── 03_lstm_training.ipynb
-│   └── 04_model_evaluation.ipynb
-│
-├── 📁 src/
-│   ├── 🔵 domain/
-│   │   ├── entities/
-│   │   │   ├── stock.py
-│   │   │   ├── prediction.py
-│   │   │   └── news_signal.py
-│   │   ├── value_objects/             
-│   │   │   ├── ticker.py
-│   │   │   ├── price.py
-│   │   │   └── sentiment_score.py
-│   │   ├── interfaces/
-│   │   │   ├── i_stock_repository.py
-│   │   │   ├── i_model.py
-│   │   │   ├── i_scaler.py
-│   │   │   ├── i_news_repository.py
-│   │   │   └── i_sentiment_analyzer.py
-│   │   ├── exceptions.py              
-│   │   └── __init__.py
-│   │
-│   ├── 🟠 infrastructure/
-│   │   ├── repositories/
-│   │   │   ├── yfinance_repository.py
-│   │   │   ├── model_repository.py
-│   │   │   └── news_repository.py
-│   │   ├── nlp/
-│   │   │   └── finbert_analyzer.py
-│   │   ├── ml/
-│   │   │   ├── lstm_model.py
-│   │   │   └── scaler.py
-│   │   ├── config/
-│   │   │   └── settings.py
-│   │   └── __init__.py
-│   │
-│   ├── 🟢 application/
-│   │   ├── use_cases/
-│   │   │   ├── predict_closing_price.py
-│   │   │   ├── predict_with_sentiment.py
-│   │   │   ├── train_model.py
-│   │   │   └── evaluate_model.py
-│   │   ├── services/
-│   │   │   ├── predictor_service.py
-│   │   │   ├── enriched_predictor_service.py
-│   │   │   └── news_aggregator_service.py
-│   │   ├── mappers/                   
-│   │   │   ├── prediction_mapper.py
-│   │   │   └── news_mapper.py
-│   │   └── __init__.py
-│   │
-│   └── 🟣 api/
-│       ├── main.py
-│       ├── dependencies.py            
-│       ├── routes/
-│       │   ├── predict.py
-│       │   ├── predict_enriched.py
-│       │   ├── news.py
-│       │   ├── health.py
-│       │   └── metrics.py
-│       └── dtos/
-│           ├── predict_request.py
-│           ├── predict_response.py
-│           ├── enriched_predict_request.py
-│           └── news_response.py
-│
-├── 📁 models/
-│   ├── lstm_nvda.keras
-│   ├── lstm_nvda_enriched.keras
-│   └── .gitignore                     
-│
-├── 📊 monitoring/
-│   ├── prometheus.yml
-│   └── grafana/
-│       └── dashboard.json
-│
-├── 🧪 tests/
-│   ├── unit/
-│   │   ├── test_preprocessor.py
-│   │   ├── test_predictor_service.py
-│   │   ├── test_sentiment.py
-│   │   └── test_model_training.py
-│   ├── integration/
-│   │   └── test_predict_endpoint.py
-│   └── e2e/                           
-│       └── test_api_full_flow.py
-│
-├── 🐳 docker/
-│   ├── Dockerfile
-│   └── docker-compose.yml
-│
-├── pyproject.toml
-├── requirements.txt
-├── requirements-dev.txt
-├── Makefile
-├── .env.example
-└── README.md
++-- Docs/
+|   `-- 2026-05-05-final-audit-report.md
++-- data/
+|   +-- raw/
+|   `-- processed/
++-- models/
+|   +-- manifests/
+|   +-- training_runs/
+|   +-- comparison_runs/
+|   +-- quantum_training_runs/
+|   +-- serving_promotions.json
+|   `-- lstm_*.keras
++-- notebooks/
++-- scripts/
+|   +-- generate_raw.py
+|   +-- generate_refined.py
+|   +-- generate_features.py
+|   +-- train_keras.py
+|   +-- train_model_quantum.py
+|   +-- train_and_compare_models.py
+|   +-- generate_forecast.py
+|   +-- provision_athena.py
+|   +-- backfill_model_artifact_references.py
+|   +-- run_front.py
+|   `-- test_ibm_quantum.py
++-- src/
+|   +-- api/
+|   +-- application/
+|   +-- domain/
+|   +-- front/
+|   `-- infrastructure/
++-- tests/
+|   +-- test_api_endpoints.py
+|   `-- test_news_aggregator_service.py
++-- ARCHITECTURE.md
++-- requirements.txt
++-- requirements-dev.txt
+`-- README.md
 ```
+
+Generated partitions under `data/raw/`, `data/processed/`, and `models/training_runs/` are intentionally omitted for brevity.
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 ### Prerequisites
 
 - Python 3.11+
-- Docker 26+ and Docker Compose v2
 - Git
 
-### Option A - Local (virtualenv)
+### Local setup
 
 ```bash
 # 1. Clone
 git clone https://github.com/guilherme-lossio/tech-challenge-phase4.git
 cd tech-challenge-phase4
 
-# 2. Virtual environment
-python -m venv venv
-source venv/bin/activate          # Linux / macOS
-venv\Scripts\activate             # Windows
+# 2. Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate          # Linux / macOS
+.venv\Scripts\activate             # Windows PowerShell
 
-# 3. Dependencies
+# 3. Install runtime dependencies
 pip install -r requirements.txt
 
-# 4. Environment variables
-cp .env.example .env              # Linux / macOS
-copy .env.example .env            # Windows
+# 4. Install development dependencies
+pip install -r requirements-dev.txt
 
-# 5. Start API
+# 5. Create local environment file
+cp .env.example .env               # Linux / macOS
+copy .env.example .env             # Windows
+```
+
+### Run the API
+
+```bash
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-# 6. Start read-only client view
+### Run the frontend
+
+```bash
 python scripts/run_front.py
 ```
 
-### Environment Variables
+Useful local URLs:
 
-Configure at least the model paths. News credentials are required only for live enrichment features.
+| Service | URL |
+|---|---|
+| FastAPI Swagger UI | http://localhost:8000/docs |
+| FastAPI ReDoc | http://localhost:8000/redoc |
+| Flask frontend | http://localhost:5001/ |
+
+### Environment variables
+
+Important local variables:
 
 ```env
-MODEL_PATH=models/lstm_nvda.keras
-ENRICHED_MODEL_PATH=models/lstm_nvda_enriched.keras
 RAW_LOCAL_DIR=data/raw
 PROCESSED_LOCAL_DIR=data/processed
-S3_BUCKET_PROCESSED=your-processed-bucket-name
-S3_PROCESSED_PREFIX=processed
+MODELS_DIR=models
 AWS_REGION=us-east-1
-S3_BUCKET_RAW=your-raw-bucket-name
-S3_RAW_PREFIX=raw
-S3_BUCKET_REFINED=your-refined-bucket-name
-S3_REFINED_PREFIX=refined
+S3_BUCKET_RAW=
+S3_BUCKET_REFINED=
+S3_BUCKET_PROCESSED=
+S3_BUCKET_MODEL=
 ATHENA_DATABASE=tech_challenge_phase4
 ATHENA_WORKGROUP=primary
-ATHENA_OUTPUT_S3_URI=s3://your-athena-results-bucket/path/
-NEWSAPI_KEY=your_newsapi_key
-ALPHAVANTAGE_KEY=your_alpha_vantage_key
+ATHENA_OUTPUT_S3_URI=
 ```
 
 Notes:
 
-- `POST /predict` works with the standard model only
-- when `prices` is omitted in `POST /predict`, the API builds the 60-day window automatically from local historical data
-- `GET /forecasts/{symbol}` can serve both `normal` and `quant` predictions from the materialized `future_predict` dataset
-- the API never triggers live quantum inference or IBM Quantum token usage at request time
-- `scripts/run_front.py` starts a read-only Flask client view for forecasts and training data on port `5001`
-- `POST /predict/enriched` and `GET /news/{symbol}` are reserved for a later stage and currently return `501`
+- News API credentials are optional because the news endpoints are not active yet.
+- The API never triggers live IBM Quantum inference at request time.
+- `requirements.txt` contains runtime dependencies only; `requirements-dev.txt` adds `pytest`, `pytest-cov`, `httpx`, `black`, `flake8`, and `pre-commit`.
 
-### Generate Raw Market Data
+---
 
-Use the raw generator to materialize the historical OHLCV zone locally and optionally mirror it to S3. Local files stay in `csv/json`; S3 objects are written in `.parquet`.
+## Pipeline
 
-By default, `scripts/generate_raw.py` collects data from `2000-01-01` through December 31 of the last completed fiscal year. This keeps the default extraction window aligned with a fully closed fiscal year while still allowing explicit `--start-date` and `--end-date` overrides.
+The pipeline is organized as independent scripts.
+
+### 1. Generate raw market data
 
 ```bash
-# Local raw zone only
 python scripts/generate_raw.py --skip-s3
-
-# Local + S3 upload (requires S3_BUCKET_RAW and AWS credentials)
-python scripts/generate_raw.py
 ```
 
-Raw files are partitioned by source, symbol, and extraction date:
+Output examples:
 
 ```text
-data/raw/
-├── market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-19/ohlcv.csv
-└── manifests/extraction_date=2026-04-19/raw_manifest.json
+data/raw/market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-22/ohlcv.csv
+data/raw/manifests/extraction_date=2026-04-22/raw_manifest.json
 ```
 
-```text
-s3://your-raw-bucket-name/raw/
-├── market_data/source=yfinance/symbol=NVDA/extraction_date=2026-04-19/ohlcv.parquet
-└── manifests/extraction_date=2026-04-19/raw_manifest.parquet
-```
-
-### Generate Refined Datasets
-
-Use the refined generator after the raw zone is already available locally. This step applies min-max scaling, creates the sliding windows, and materializes train, validation, and test rows into `data/processed`.
+### 2. Generate refined datasets
 
 ```bash
-# Local refined zone only
 python scripts/generate_refined.py --skip-s3
-
-# Local + S3 upload
-python scripts/generate_refined.py
 ```
 
-Refined files are partitioned by source, symbol, lookback, and extraction date:
-
-```text
-data/processed/
-├── refined_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-19/refined.parquet
-└── manifests/extraction_date=2026-04-19/refined_manifest.json
-```
-
-```text
-s3://your-refined-bucket-name/refined/
-├── refined_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-19/refined.parquet
-└── manifests/extraction_date=2026-04-19/refined_manifest.parquet
-```
-
-### Generate Feature Datasets
-
-Use the feature generator after the refined zone is available. This step derives engineered statistics for each rolling window and stores them in the processed zone. Training scripts automatically prefer feature datasets when they exist for the same extraction date.
+### 3. Generate feature datasets
 
 ```bash
-# Local feature zone only
 python scripts/generate_features.py --skip-s3
-
-# Local + S3 upload
-python scripts/generate_features.py
 ```
 
-Feature files are partitioned by source, symbol, lookback, and extraction date:
+Training prefers feature datasets when they exist for the same extraction date.
 
-```text
-data/processed/
-├── feature_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-22/features.parquet
-└── manifests/extraction_date=2026-04-22/feature_manifest.json
-```
-
-```text
-s3://your-processed-bucket-name/processed/
-├── feature_data/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-04-22/features.parquet
-└── manifests/extraction_date=2026-04-22/feature_manifest.json
-```
-
-### Train the Baseline Keras Model
-
-Once refined or feature datasets exist, train the classical baseline from the latest available extraction date or pin a specific partition explicitly.
+### 4. Train the classical Keras baseline
 
 ```bash
-# Latest available extraction date
 python scripts/train_keras.py --skip-s3
-
-# Specific extraction date and multiple symbols
 python scripts/train_keras.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --verbose 0
 ```
 
-The script stores model artifacts in `models/` and writes a manifest under `models/manifests/extraction_date=<date>/trained_at=<utc_timestamp>/keras_training_manifest.json`.
+Training outputs:
 
-### Generate Monthly Forecast Datasets
+- immutable artifacts under `models/training_runs/...`
+- training manifests under `models/manifests/extraction_date=<date>/trained_at=<timestamp>/keras_training_manifest.json`
+- published convenience aliases under `models/lstm_*.keras`
 
-For practical tests, the safest extension is a **batch future-prediction dataset** instead of trying to stretch the online `POST /predict` contract. The generator uses the last observed `lookback` window and materializes both model families for each future business day:
-
-- `predict_type=normal` uses the trained 1-day LSTM and rolls it forward recursively
-- `predict_type=quant` uses the trained quantum classifier to predict direction and stores a price proxy derived from recent realized volatility
-
-Important: the forecast always starts from the **last date available in the raw zone**. With the default `scripts/generate_raw.py` behavior documented above, that means the horizon starts after the last completed fiscal year end. If you want a more current practical test window, regenerate `raw`, `refined`, and the model with an explicit `--end-date` first.
+### 5. Generate future forecasts
 
 ```bash
-# Local future-prediction dataset only
 python scripts/generate_forecast.py --skip-s3 --skip-athena
-
-# Specific extraction date and symbols, with S3 + Athena publish
-python scripts/generate_forecast.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --horizon-days 30
 ```
 
-The output is intentionally flat, with **one row per symbol, per future business day, per model family**, so it can be queried directly from Athena and later exposed by an API without reshaping arrays in the query layer.
-
-Current layout:
+Output example:
 
 ```text
-data/processed/
-└── future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
+data/processed/future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
 ```
 
-```text
-s3://your-processed-bucket-name/processed/
-└── future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
-```
-
-```text
-data/processed/
-├── forecast_data/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast.parquet
-└── manifests/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast_manifest.json
-```
-
-```text
-s3://your-processed-bucket-name/processed/
-├── forecast_data/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast.parquet
-└── manifests/extraction_date=2026-04-22/generated_at=20260426T120000Z/forecast_manifest.json
-```
-
-Recommended Athena-friendly columns include:
-
-- `symbol`
-- `predict_type`
-- `forecast_step`
-- `forecast_date`
-- `predicted_close`
-- `predicted_direction`
-- `last_observed_date`
-- `last_observed_close`
-- `input_window_end_origin`
-- `observed_points_in_window`
-- `predicted_points_in_window`
-- `generated_at_utc`
-
-This makes it straightforward to serve later endpoints such as `GET /forecasts/{symbol}?as_of=2026-04-22`.
-
-### Provision Athena Catalog
-
-Once the zones are already published to S3, create the Athena database and external tables with:
+### 6. Compare classical and quantum paths
 
 ```bash
-# Review the generated DDL first
-python scripts/provision_athena.py --print-only
-
-# Execute against AWS Athena
-python scripts/provision_athena.py --lookback 60
-```
-
-The script creates:
-
-- `raw_ohlcv`
-- `refined_close_lkb60`
-- `feature_close_lkb60`
-- `future_predict`
-
-Important:
-
-- `refined_*` and `feature_*` depend on `lookback`, because the parquet schema contains one lag column per timestep.
-- `ATHENA_OUTPUT_S3_URI` is required unless the selected Athena workgroup already has an output location configured.
-- After new partitions land in S3, rerun the script or run `MSCK REPAIR TABLE` for the affected tables.
-
-### Compare Classical and Quantum Training Paths
-
-Use the comparison runner to execute the classical Keras baseline and the hybrid quantum workflow in one pass, then generate a dashboard, confusion matrices, and a markdown report for each symbol.
-
-```bash
-# Local quantum simulation (default)
 python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --skip-s3
-
-# IBM Quantum Runtime
-python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantum-mode cloud --quantum-backend <backend-name> --skip-s3
 ```
 
-Comparison artifacts are stored under:
-
-```text
-models/
-└── comparison_runs/extraction_date=<date>/generated_at=<utc_timestamp>/
-    ├── comparison_manifest.json
-    └── symbol=<ticker>/
-        ├── comparison_report.md
-        ├── comparison_dashboard.png
-        └── comparison_confusion_matrices.png
-```
-
-### Option B - Docker (recommended)
+### 7. Backfill manifest artifact references
 
 ```bash
-# Build and start all services
-docker-compose up --build
-
-# Run in background
-docker-compose up -d
-
-# Check logs
-docker-compose logs -f api
+python scripts/backfill_model_artifact_references.py
 ```
 
-### Access Points
+This script annotates historical manifests with:
 
-| Service | URL |
-|---|---|
-| API (Swagger UI) | http://localhost:8000/docs |
-| API (ReDoc) | http://localhost:8000/redoc |
-| Client View (Flask) | http://localhost:5001/ |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 |
+- `immutable_model_local_path`
+- `published_model_local_path`
+- `artifact_reference_mode`
 
 ---
 
-## 🔄 Data Pipeline
+## Promotion Policy
 
-### 1. Multi-Asset Collection
+Online prediction serving is governed by `models/serving_promotions.json`.
 
-```python
-from datetime import date
-import yfinance as yf
+Rules:
 
-SYMBOLS = ["NVDA", "AMD", "TSM", "ASML", "QCOM"]
-START_DATE = "2000-01-01"
-END_DATE = date(date.today().year - 1, 12, 31).isoformat()
+- Only artifacts listed in that file are eligible for `POST /predict` serving resolution.
+- Each approved entry must point to an immutable `models/training_runs/...` artifact.
+- If a newer training partition exists but is not approved, the API falls back to the newest approved artifact on or before the requested `extraction_date`.
+- Legacy manifests that only reference mutable top-level aliases are excluded from serving selection when the promotion policy is active.
 
-assets = {
-    symbol: yf.download(symbol, start=START_DATE, end=END_DATE)[["Close"]].dropna()
-    for symbol in SYMBOLS
-}
-```
-
-### 2. Normalization
-
-```python
-from sklearn.preprocessing import MinMaxScaler
-
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_nvda = scaler.fit_transform(assets["NVDA"])
-```
-
-> Persist the scaler alongside the model so inverse transformation remains consistent in production.
-
-### 3. Sliding Window
-
-```python
-import numpy as np
-
-LOOKBACK = 60  # trading days
-
-def create_sequences(data: np.ndarray, lookback: int):
-    X, y = [], []
-    for i in range(lookback, len(data)):
-        X.append(data[i - lookback:i, 0])
-        y.append(data[i, 0])
-    return np.array(X), np.array(y)
-
-X, y = create_sequences(scaled_nvda, LOOKBACK)
-X = X.reshape(X.shape[0], X.shape[1], 1)
-```
-
-### 4. News Sentiment Enrichment
-
-Live or recent news can be aggregated into a daily sentiment score per asset and fused with the price sequence:
-
-```python
-# price_seq: shape (60, 1)
-# sentiment_seq: shape (60, 1)
-
-X_enriched = np.concatenate([price_seq, sentiment_seq], axis=-1)
-# shape: (60, 2)
-```
-
-### 5. Train / Validation / Test Split
-
-```python
-n = len(X)
-train_end = int(n * 0.70)
-val_end = int(n * 0.85)
-
-X_train, y_train = X[:train_end], y[:train_end]
-X_val, y_val = X[train_end:val_end], y[train_end:val_end]
-X_test, y_test = X[val_end:], y[val_end:]
-```
-
-| Split | Proportion | Purpose |
-|---|---|---|
-| Train | 70% | Weight optimization |
-| Validation | 15% | Hyperparameter tuning and early stopping |
-| Test | 15% | Final unbiased evaluation |
+This policy keeps online serving stable even when the latest training run is degraded or only partially materialized.
 
 ---
 
-## 🧠 LSTM Model
+## API
 
-### Architecture
-
-The project maintains two closely related LSTM variants:
-
-| Variant | Input Shape | Features | Output |
-|---|---|---|---|
-| Baseline | `(60, 1)` | normalized closing prices | next-day close |
-| Enriched | `(60, 2)` | normalized prices + sentiment score | next-day close |
-
-Both variants use the same stacked architecture:
-
-```text
-Input Layer       -> 60 timesteps
-LSTM Layer 1      -> 128 units, return_sequences=True
-Dropout           -> 0.20
-LSTM Layer 2      -> 64 units, return_sequences=False
-Dropout           -> 0.20
-Dense Layer       -> 32 units, activation=relu
-Output Layer      -> 1 unit
-```
-
-### Keras Implementation
-
-```python
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-
-def build_model(input_shape: tuple) -> Sequential:
-    model = Sequential([
-        LSTM(128, return_sequences=True, input_shape=input_shape),
-        Dropout(0.2),
-        LSTM(64, return_sequences=False),
-        Dropout(0.2),
-        Dense(32, activation="relu"),
-        Dense(1)
-    ])
-    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-    return model
-```
-
-### Training
-
-```python
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-
-callbacks = [
-    EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True),
-    ModelCheckpoint("models/lstm_nvda.keras", save_best_only=True)
-]
-
-model = build_model(input_shape=(60, 1))
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=100,
-    batch_size=32,
-    callbacks=callbacks,
-    verbose=1
-)
-```
-
-Use the same training flow for the enriched model, changing the input shape to `(60, 2)` and the output checkpoint to `models/lstm_nvda_enriched.keras`.
-
-### Hyperparameters
-
-| Parameter | Value | Rationale |
-|---|---|---|
-| Lookback window | 60 days | enough context without excessive drift |
-| LSTM units L1 | 128 | captures multi-scale temporal patterns |
-| LSTM units L2 | 64 | compresses learned representation |
-| Dropout rate | 0.20 | regularization without strong underfitting |
-| Optimizer | Adam | robust default for non-stationary series |
-| Learning rate | 0.001 | standard starting point |
-| Loss function | MSE | penalizes large deviations |
-| Batch size | 32 | stable training for sequence batches |
-| Max epochs | 100 | upper bound with early stopping |
-
----
-
-## 📊 Evaluation Metrics
-
-```python
-import numpy as np
-
-def evaluate(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    mae = np.mean(np.abs(y_true - y_pred))
-    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-    return {"MAE": mae, "RMSE": rmse, "MAPE": mape}
-```
-
-| Metric | Interpretation |
-|---|---|
-| MAE | average absolute error in USD |
-| RMSE | stronger penalty for large errors |
-| MAPE | scale-independent percentage error |
-
-For the current project scope, the relevant comparison is:
-
-- **Baseline vs enriched model**
-- **Validation vs test split**
-- **Price-only vs price-plus-sentiment input**
-- **Classical Keras price regression vs hybrid quantum directional classification**
-
-For a reproducible classical-vs-quantum benchmark, use `scripts/train_and_compare_models.py`. The script trains both paths from the same extraction date and generates a markdown report plus visual assets under `models/comparison_runs/...`.
-
----
-
-## 🌐 API Reference
-
-The API is built with **FastAPI** and documented through OpenAPI at `/docs`. The online serving policy is intentionally strict: live requests use only the baseline Keras LSTM, while quantum outputs are served only when they were precomputed offline into `future_predict`.
+The API is documented at `/docs`.
 
 ### `GET /health`
 
-Returns service status and loaded model metadata.
-
-**Response `200 OK`:**
-```json
-{
-  "status": "ok",
-  "model": "lstm_nvda",
-  "version": "1.0.0",
-  "uptime_seconds": 3821
-}
-```
+Returns status, API version, uptime, default classical model metadata, supported symbols, and aligned extraction-date metadata.
 
 ### `POST /predict`
 
-Accepts 60 historical closing prices and returns the next-day forecast using the baseline model. When `prices` is omitted, the API builds the 60-day window automatically from the local historical dataset for the requested symbol.
+Supports two request modes:
 
-**Request:**
-```json
-{
-  "symbol": "NVDA",
-  "prices": [432.10, 435.30, 440.00, "... 60 float values total ..."]
-}
-```
+- `symbol` + exactly 60 prices
+- `symbol` + optional `extraction_date` + optional `reference_date` when the API should build the 60-day window from local data
 
-Automatic window mode:
+Example:
 
 ```json
 {
   "symbol": "NVDA",
-  "extraction_date": "2026-04-27",
-  "reference_date": "2025-12-31"
+  "prices": [208.27, 208.27, 208.27, 208.27, 208.27]
 }
 ```
 
-**Response `200 OK`:**
-```json
-{
-  "symbol": "NVDA",
-  "predicted_close": 447.82,
-  "lower_bound": 439.60,
-  "upper_bound": 456.04,
-  "confidence": 0.95,
-  "currency": "USD",
-  "model": "lstm_nvda",
-  "timestamp": "2024-07-21T14:32:00Z",
-  "input_mode": "historical_auto_window",
-  "resolved_window_start_date": "2025-10-07",
-  "resolved_window_end_date": "2025-12-31"
-}
-```
+The real request must provide exactly 60 values.
 
 ### `GET /forecasts/{symbol}`
 
-Returns the latest materialized future predictions for a supported symbol.
+Serves materialized forecast rows from `data/processed/future_predict`.
 
 Supported query parameters:
 
@@ -839,247 +342,90 @@ Supported query parameters:
 - `horizon_days=30`
 - `limit=<n>`
 
-The response includes both the full available forecast interval and the filtered interval actually returned. This endpoint can expose `quant` rows, but only from stored parquet partitions generated offline.
+When `extraction_date` is omitted, the route uses the same aligned default date advertised by `/health`, `/methods`, and `/data-usage`.
 
 ### `POST /predict/enriched`
 
-Reserved for a later stage of the API and currently returns `501 Not Implemented`.
+Returns `501 Not Implemented` in the current version.
 
 ### `GET /news/{symbol}`
 
-Reserved for a later stage of the API and currently returns `501 Not Implemented`.
+Returns `501 Not Implemented` in the current version.
 
 ### `GET /methods`
 
-Returns a machine-readable explanation of the prediction methods exposed by the API, including the rule that quantum inference is batch-only.
+Returns the machine-readable method catalog and aligned extraction-date metadata.
 
 ### `GET /data-usage`
 
-Returns the data sources, lookback/horizon settings, supported symbols, and the serving policy used by the API.
+Returns the data-source summary, lookback and horizon configuration, supported symbols, and serving-policy notes.
 
 ### `GET /metrics`
 
-Exposes Prometheus-compatible metrics for scraping.
+Returns Prometheus-compatible text metrics.
 
-### Error Codes
+Current error semantics:
 
 | Status | Condition |
 |---|---|
-| `422` | Invalid payload, wrong input length, or non-numeric values |
-| `503` | Model unavailable or enrichment dependency unavailable |
+| `404` | Requested materialized forecast partition was not found |
+| `422` | Invalid payload or unsupported request shape |
+| `503` | Model unavailable or no approved serving artifact could be resolved |
 
 ---
 
-## 🐳 Docker & Deployment
+## Quality
 
-### Dockerfile
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY src/ ./src/
-COPY models/ ./models/
-
-EXPOSE 8000
-
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### docker-compose.yml
-
-```yaml
-version: "3.9"
-
-services:
-  api:
-    build: .
-    ports: ["8000:8000"]
-    environment:
-      - MODEL_PATH=models/lstm_nvda.keras
-      - ENRICHED_MODEL_PATH=models/lstm_nvda_enriched.keras
-      - NEWSAPI_KEY=${NEWSAPI_KEY}
-      - ALPHAVANTAGE_KEY=${ALPHAVANTAGE_KEY}
-    depends_on: [prometheus]
-    restart: unless-stopped
-
-  prometheus:
-    image: prom/prometheus:latest
-    ports: ["9090:9090"]
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-
-  grafana:
-    image: grafana/grafana:latest
-    ports: ["3000:3000"]
-    volumes:
-      - ./monitoring/grafana:/etc/grafana/provisioning
-```
-
-| Service | Port | Description |
-|---|---|---|
-| `api` | 8000 | FastAPI inference server |
-| `prometheus` | 9090 | Metrics collection and storage |
-| `grafana` | 3000 | Monitoring dashboards |
-
----
-
-## 📡 Monitoring
-
-### Tracked Metrics
-
-| Metric | Type | Description |
-|---|---|---|
-| `predictions_total` | Counter | Total prediction requests by symbol |
-| `prediction_latency_seconds` | Histogram | Inference latency distribution |
-| `prediction_errors_total` | Counter | Prediction failures by type |
-| `news_fetch_errors_total` | Counter | Failed external news fetch attempts |
-| `sentiment_score_live` | Gauge | Current aggregated sentiment score |
-| `model_mae_live` | Gauge | Rolling MAE on live predictions |
-| `container_cpu_usage` | Gauge | CPU utilization |
-| `container_memory_usage_bytes` | Gauge | Memory consumption |
-
-### Alerting Rules
-
-```yaml
-groups:
-  - name: lstm_api
-    rules:
-      - alert: HighLatency
-        expr: histogram_quantile(0.95, prediction_latency_seconds_bucket) > 0.5
-        for: 2m
-        labels: { severity: warning }
-        annotations:
-          summary: "P95 latency above 500ms"
-      - alert: HighErrorRate
-        expr: rate(prediction_errors_total[5m]) > 0.05
-        for: 1m
-        labels: { severity: critical }
-      - alert: NewsSourceFailure
-        expr: rate(news_fetch_errors_total[10m]) > 0
-        for: 5m
-        labels: { severity: warning }
-```
-
----
-
-## ⚙️ Software Engineering
-
-### Design Patterns
-
-**Strategy** - swappable normalization and sentiment analysis components:
-
-```python
-class IScaler(ABC): ...
-class MinMaxStrategy(IScaler): ...
-
-class ISentimentAnalyzer(ABC): ...
-class FinBERTSentimentAnalyzer(ISentimentAnalyzer): ...
-```
-
-**Repository** - decouples both market and news data sources from business logic:
-
-```python
-class IStockRepository(ABC): ...
-class YFinanceRepository(IStockRepository): ...
-
-class INewsRepository(ABC): ...
-class NewsAPIRepository(INewsRepository): ...
-```
-
-**Factory** - controlled model instantiation for baseline and enriched variants:
-
-```python
-@ModelFactory.register("lstm")
-class LSTMModel(IModel): ...
-
-@ModelFactory.register("lstm_enriched")
-class LSTMEnrichedModel(IModel): ...
-```
-
-### SOLID Principles
-
-| Principle | Implementation |
-|---|---|
-| **S** ingle Responsibility | `Preprocessor`, `PredictorService`, and `NewsAggregatorService` each own one concern |
-| **O** pen/Closed | New models and new news sources are added through registries and interfaces |
-| **L** iskov Substitution | Repository and analyzer implementations are interchangeable |
-| **I** nterface Segregation | `IModel`, `IScaler`, `IStockRepository`, `INewsRepository`, `ISentimentAnalyzer` remain focused |
-| **D** ependency Inversion | Services depend on interfaces injected at composition time |
-
-### Testing
+### Tests
 
 ```bash
-pytest tests/ -v --cov=src --cov-report=html
+python -m unittest discover -s tests
+pytest tests -q
 ```
 
-| Layer | Location | Coverage Target |
-|---|---|---|
-| Unit | `tests/unit/` | >= 80% |
-| Integration | `tests/integration/` | Standard and enriched endpoints |
-| Model | `tests/test_model.py` | Output shapes and value ranges |
-| NLP | `tests/unit/test_sentiment.py` | Sentiment direction and edge cases |
+Current regression coverage includes:
 
-### CI/CD Pipeline
+- FastAPI endpoint alignment tests for `/predict`, `/forecasts/{symbol}`, `/health`, `/methods`, and `/data-usage`
+- news deduplication regression tests for timezone-aware and missing timestamps
 
-```text
-push / pull_request
-        |
-        +-- [lint]    black --check · flake8
-        +-- [test]    pytest --cov=src
-        +-- [build]   docker build -t lstm-api:$SHA
-        +-- [scan]    trivy image
-        \-- [deploy]  docker push -> production
+### Linting
+
+```bash
+black --check src tests scripts
+flake8 src tests scripts
 ```
 
-Branch strategy: `main` <- `develop` <- `feature/*`  
-Commit convention: [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `docs:`, `test:`, `chore:`)
+### CI status
+
+No `.github/workflows/` pipeline is committed in the current repository snapshot. The validated QA flow is local.
 
 ---
 
-## 📈 Results
+## Deployment
 
-> To be completed after final training and benchmark comparison.
+Container, compose, Prometheus, and Grafana assets are not committed today.
 
-| Metric | Baseline Validation | Baseline Test | Enriched Validation | Enriched Test |
-|---|---|---|---|---|
-| MAE (USD) | - | - | - | - |
-| RMSE (USD) | - | - | - | - |
-| MAPE (%) | - | - | - | - |
+The supported execution model in this repository is:
 
-Use this section to report whether news sentiment enrichment improves directional consistency, interval quality, or raw regression error relative to the baseline.
+- local virtualenv for API and frontend
+- filesystem-backed raw, processed, and model artifacts
+- optional S3 and Athena publication through the provided scripts
 
-Forecast vs. actual charts and residual analysis are available in `notebooks/04_model_evaluation.ipynb`.
+If containerization is added later, it must include:
 
----
-
-## 🎥 Demo Video
-
-> Link to be added after recording.
-
-[![Watch the demo](https://img.shields.io/badge/Watch_Demo-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtube.com)
+- `data/`
+- `models/`
+- `.env`
+- `models/serving_promotions.json`
+- immutable `models/training_runs/...` artifacts referenced by the promotion policy
 
 ---
 
-## 👨‍💻 Author
-
-<div align="center">
+## Author
 
 **Guilherme Lossio**  
 Postgraduate Program in Machine Learning Engineering  
 Tech Challenge - Phase 4
 
-[![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/guilherme-lossio)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/guilherme-lossio)
-
-</div>
-
----
-
-<div align="center">
-<sub>Developed for academic purposes as part of a postgraduate program in Machine Learning Engineering.</sub>
-</div>
+- GitHub: https://github.com/guilherme-lossio
+- LinkedIn: https://linkedin.com/in/guilherme-lossio

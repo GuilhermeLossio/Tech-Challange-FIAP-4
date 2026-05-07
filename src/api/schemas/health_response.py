@@ -12,6 +12,7 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     supported_symbols: list[str]
     latest_extraction_date: str
+    latest_trained_extraction_date: str
     online_quantum_inference_enabled: bool
     future_predict_ready: bool
     materialized_forecast_symbols: list[str]

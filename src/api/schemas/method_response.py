@@ -23,3 +23,4 @@ class MethodCatalogResponse(BaseModel):
     methods: list[MethodCatalogItemResponse]
     supported_symbols: list[str]
     latest_extraction_date: str
+    latest_trained_extraction_date: str

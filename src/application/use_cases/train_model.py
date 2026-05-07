@@ -80,6 +80,8 @@ class KerasModelArtifact:
     feature_count: int
     epochs_ran: int
     best_epoch: int
+    immutable_model_local_path: str
+    published_model_local_path: str | None
     model_local_path: str
     history_local_path: str
     model_s3_uri: str | None
@@ -198,7 +200,7 @@ class KerasTrainingService:
             if not model_path.exists():
                 model.save(model_path)
             model = tf.keras.models.load_model(model_path)
-            self._publish_latest_model_alias(
+            published_model_path = self._publish_latest_model_alias(
                 model_path=model_path,
                 symbol=symbol,
                 model_name_prefix=request.model_name_prefix,
@@ -264,6 +266,8 @@ class KerasTrainingService:
                     feature_count=1,
                     epochs_ran=history_payload["epochs_ran"],
                     best_epoch=history_payload["best_epoch"],
+                    immutable_model_local_path=str(model_path),
+                    published_model_local_path=str(published_model_path),
                     model_local_path=str(model_path),
                     history_local_path=str(history_path),
                     model_s3_uri=model_s3_uri,

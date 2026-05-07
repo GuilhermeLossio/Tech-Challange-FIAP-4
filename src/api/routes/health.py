@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.dependencies import API_VERSION, get_future_prediction_service, get_metrics_service
 from src.api.dependencies import get_standard_predictor_service
+from src.api.serving_defaults import resolve_latest_api_extraction_date
 from src.api.schemas.health_response import HealthResponse
 from src.application.services.api_metrics_service import ApiMetricsService
 from src.application.services.future_prediction_service import FuturePredictionService
@@ -23,6 +24,10 @@ def get_health(
     metrics_service.record_request(route_name)
     try:
         registry = predictor_service.describe_registry()
+        extraction_dates = resolve_latest_api_extraction_date(
+            predictor_service=predictor_service,
+            future_prediction_service=future_prediction_service,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         metrics_service.record_error(route_name)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -33,7 +38,8 @@ def get_health(
         version=API_VERSION,
         uptime_seconds=metrics_service.get_uptime_seconds(),
         supported_symbols=registry["supported_symbols"],
-        latest_extraction_date=registry["latest_extraction_date"],
+        latest_extraction_date=extraction_dates.latest_extraction_date,
+        latest_trained_extraction_date=extraction_dates.latest_trained_extraction_date,
         online_quantum_inference_enabled=False,
         future_predict_ready=future_prediction_service.has_materialized_forecasts(),
         materialized_forecast_symbols=list(future_prediction_service.list_symbols()),
