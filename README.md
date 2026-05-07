@@ -40,11 +40,25 @@ endpoint — enabling direct, apples-to-apples comparison without live quantum i
 
 ---
 
+## Visual Guide
+
+Each diagram highlights one discussion topic for project walkthroughs.
+
+| Topic | Diagram |
+|---|---|
+| Current architecture vs `[NEW]` roadmap | ![Clean architecture layers](Docs/graphs/clean_architecture_layers.svg) |
+| Semiconductor market rationale | ![Semiconductor supply chain](Docs/graphs/semiconductor_supply_chain.svg) |
+| Classical production path vs offline quantum comparison | ![Hybrid classical-quantum pipeline](Docs/graphs/hybrid_classical_quantum_pipeline.svg) |
+| Active API endpoints and forecast serving flow | ![API request flow](Docs/graphs/api_request_flow.svg) |
+
+---
+
 ## Table of Contents
 
 | Section | Description |
 |---|---|
 | [Why this project](#why-this-project) | Motivation and key design decisions |
+| [Visual Guide](#visual-guide) | Diagrams for project walkthroughs |
 | [About](#about) | Scope and current implementation status |
 | [Architecture](#architecture) | Project layers and data flow |
 | [Repository Structure](#repository-structure) | Actual folders and key files |

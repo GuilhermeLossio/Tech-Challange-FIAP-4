@@ -35,6 +35,8 @@
 
 This project is structured into independent, decoupled layers following **Clean Architecture** and **Domain-Driven Design (DDD)** principles. The system extends the classic LSTM price forecasting pipeline with a **News Intelligence Layer** that aggregates real-time semiconductor news from multiple sources, applies NLP sentiment analysis, and injects the resulting signal as an additional feature into the model input.
 
+![Clean architecture layers](Docs/graphs/clean_architecture_layers.svg)
+
 ```
 +----------------------------------------------------------+
 |                  API Layer  (FastAPI)                    |
@@ -123,6 +125,8 @@ src/application/
 
 For monthly practical tests, the recommended design is to keep future predictions in a dedicated processed-zone dataset instead of appending them to `raw` or `refined`. The batch generator:
 
+![Hybrid classical-quantum pipeline](Docs/graphs/hybrid_classical_quantum_pipeline.svg)
+
 - reads the latest raw closing prices from `data/raw`
 - reuses scaler metadata from the refined manifest for the same `extraction_date`
 - resolves the latest trained `lstm_<symbol>.keras` artifact for that partition
@@ -169,6 +173,8 @@ src/api/
 ## Multi-Asset Coverage
 
 The system supports five semiconductor companies that represent the full production chain — from chip design to fabrication equipment — providing cross-asset correlation signals that improve individual predictions.
+
+![Semiconductor supply chain](Docs/graphs/semiconductor_supply_chain.svg)
 
 | Symbol | Company | Role in Supply Chain | Exchange |
 |---|---|---|---|
@@ -560,6 +566,8 @@ class PredictorService:
 ---
 
 ## Detailed Data Flow
+
+![API request flow](Docs/graphs/api_request_flow.svg)
 
 ### Standard Prediction
 
