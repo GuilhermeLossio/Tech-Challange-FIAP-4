@@ -172,6 +172,10 @@ Recommended hardware mode constraints:
 - keep real hardware execution offline and materialized before API serving
 - require `--confirm-ibm-runtime-cost` before any cloud run that submits jobs
 
+The comparison script now performs a preflight guard before heavy dependency imports. Any job-submitting cloud command must include the explicit confirmation flag, while backend listing remains allowed without it.
+
+The generated markdown report is also part of the benchmark architecture. It records the runtime context that matters for scientific comparison: execution mode, backend, shots, optimizer budget, function evaluations when available, sampled split sizes, elapsed wall-clock time, and whether IBM Quantum runtime minutes were consumed. For publication-grade IBM hardware runs, the report includes a checklist for future capture of `job.metrics()`, `job.result().metadata`, QPU seconds, queue time, transpiled circuit depth, bitstring histograms, mitigation mode, and repeated-run variance.
+
 The API should continue to report `online_quantum_inference_enabled=False`. Quantum outputs served by the API must come from materialized forecast datasets, avoiding accidental IBM Quantum usage during user requests.
 
 ### 4. API Layer

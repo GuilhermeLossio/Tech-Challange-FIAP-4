@@ -327,7 +327,9 @@ python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026
 
 Cloud mode can consume IBM Quantum runtime minutes. It requires `--confirm-ibm-runtime-cost` and should be used only for controlled, single-symbol benchmark runs.
 
-The generated comparison report includes directional metrics, confusion matrices, execution environment, backend, shots, optimizer budget, available function-evaluation metadata, IBM hardware observability guidance, and an article-ready Keras vs Qiskit comparison table.
+The script refuses `--quantum-mode cloud` before heavy imports unless that confirmation flag is present. This protects IBM Quantum minutes even when TensorFlow, Qiskit, or matplotlib are not installed correctly.
+
+The generated `comparison_report.md` includes directional metrics, confusion matrices, execution environment, backend, shots, optimizer budget, available function-evaluation metadata, IBM hardware observability guidance, a cost-profile note, and an article-ready Keras vs Qiskit comparison table.
 
 ### 7. Backfill manifest artifact references
 
@@ -384,6 +386,14 @@ Recommended hardware limits:
 | `quantum_max_train_samples` | 16 to 32 |
 
 The final report exposes backend, execution mode, shots, optimizer, function evaluations when available, elapsed time, sample counts, directional metrics, and whether IBM Quantum minutes were consumed. The full decision note is in [Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md](Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md).
+
+Current report sections added for quantum methodology:
+
+- execution environment and cost profile
+- IBM real-hardware variables: queue time, execution time, noise, T1/T2, readout error, mitigation
+- IBM job observability checklist for future `job.metrics()` / `job.result().metadata` capture
+- cost model note using article-level assumptions such as QPU seconds × assumed USD/QPU-second
+- Keras vs Qiskit comparison table for article discussion
 
 ---
 
