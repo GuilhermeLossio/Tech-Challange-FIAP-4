@@ -1,0 +1,124 @@
+<svg width="100%" viewBox="0 0 980 560" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Quantum VQC Circuit Architecture</title>
+  <desc>Two-qubit VQC circuit used by the project: normalized financial features are reduced to two angles, encoded with a ZZ feature map, processed by a RealAmplitudes ansatz, measured by a sampler, and converted into a direction prediction.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#334155" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { fill: #111827; font: 700 24px Arial, sans-serif; }
+      .subtitle { fill: #475569; font: 400 14px Arial, sans-serif; }
+      .label { fill: #111827; font: 700 13px Arial, sans-serif; }
+      .small { fill: #475569; font: 400 12px Arial, sans-serif; }
+      .tiny { fill: #64748b; font: 400 11px Arial, sans-serif; }
+      .wire { stroke: #334155; stroke-width: 2; }
+      .gate-blue { fill: #e0f2fe; stroke: #0284c7; stroke-width: 1.5; }
+      .gate-green { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.5; }
+      .gate-purple { fill: #ede9fe; stroke: #7c3aed; stroke-width: 1.5; }
+      .gate-orange { fill: #ffedd5; stroke: #f97316; stroke-width: 1.5; }
+      .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.2; }
+      .note { fill: #fefce8; stroke: #ca8a04; stroke-width: 1.2; }
+      .dash { stroke: #94a3b8; stroke-width: 1.4; stroke-dasharray: 5 5; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="980" height="560"/>
+  <text class="title" x="40" y="42">VQC circuit used in the quantum benchmark</text>
+  <text class="subtitle" x="40" y="66">Normalized market features are compressed to qubit angles, encoded with ZZFeatureMap,</text>
+  <text class="subtitle" x="40" y="84">tuned by RealAmplitudes, then measured as up/down direction.</text>
+
+  <rect class="panel" x="40" y="112" width="250" height="124" rx="8"/>
+  <text class="label" x="60" y="138">Classical preprocessing</text>
+  <text class="small" x="60" y="164">Window/features from market data</text>
+  <text class="small" x="60" y="184">StandardScaler -> PCA</text>
+  <text class="small" x="60" y="204">MinMaxScaler into [0, pi]</text>
+  <text class="tiny" x="60" y="222">Output: x0, x1 for 2 qubits</text>
+
+  <line x1="290" y1="174" x2="330" y2="174" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <text class="label" x="348" y="132">Quantum circuit</text>
+  <text class="small" x="350" y="160">q0</text>
+  <text class="small" x="350" y="260">q1</text>
+  <line class="wire" x1="382" y1="156" x2="805" y2="156"/>
+  <line class="wire" x1="382" y1="256" x2="805" y2="256"/>
+
+  <rect class="gate-blue" x="400" y="132" width="58" height="48" rx="6"/>
+  <text class="label" x="429" y="152" text-anchor="middle">H</text>
+  <text class="tiny" x="429" y="169" text-anchor="middle">prep</text>
+  <rect class="gate-blue" x="400" y="232" width="58" height="48" rx="6"/>
+  <text class="label" x="429" y="252" text-anchor="middle">H</text>
+  <text class="tiny" x="429" y="269" text-anchor="middle">prep</text>
+
+  <rect class="gate-green" x="480" y="132" width="76" height="48" rx="6"/>
+  <text class="label" x="518" y="152" text-anchor="middle">RZ(x0)</text>
+  <text class="tiny" x="518" y="169" text-anchor="middle">angle</text>
+  <rect class="gate-green" x="480" y="232" width="76" height="48" rx="6"/>
+  <text class="label" x="518" y="252" text-anchor="middle">RZ(x1)</text>
+  <text class="tiny" x="518" y="269" text-anchor="middle">angle</text>
+
+  <circle cx="596" cy="156" r="6" fill="#16a34a"/>
+  <line x1="596" y1="156" x2="596" y2="256" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="596" cy="256" r="15" class="gate-green"/>
+  <line x1="586" y1="256" x2="606" y2="256" stroke="#16a34a" stroke-width="2"/>
+  <line x1="596" y1="246" x2="596" y2="266" stroke="#16a34a" stroke-width="2"/>
+  <rect class="gate-green" x="622" y="182" width="78" height="48" rx="6"/>
+  <text class="label" x="661" y="201" text-anchor="middle">RZ(ZZ)</text>
+  <text class="tiny" x="661" y="218" text-anchor="middle">entangle</text>
+  <circle cx="724" cy="156" r="6" fill="#16a34a"/>
+  <line x1="724" y1="156" x2="724" y2="256" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="724" cy="256" r="15" class="gate-green"/>
+  <line x1="714" y1="256" x2="734" y2="256" stroke="#16a34a" stroke-width="2"/>
+  <line x1="724" y1="246" x2="724" y2="266" stroke="#16a34a" stroke-width="2"/>
+
+  <rect class="gate-purple" x="402" y="324" width="352" height="90" rx="8"/>
+  <text class="label" x="578" y="350" text-anchor="middle">Qiskit ZZFeatureMap</text>
+  <text class="small" x="578" y="374" text-anchor="middle">feature_dimension = num_qubits</text>
+  <text class="small" x="578" y="394" text-anchor="middle">reps = 1, entanglement = linear</text>
+  <line class="dash" x1="578" y1="324" x2="578" y2="290"/>
+
+  <rect class="gate-purple" x="760" y="132" width="80" height="48" rx="6"/>
+  <text class="label" x="800" y="152" text-anchor="middle">RY(theta)</text>
+  <text class="tiny" x="800" y="169" text-anchor="middle">ansatz</text>
+  <rect class="gate-purple" x="760" y="232" width="80" height="48" rx="6"/>
+  <text class="label" x="800" y="252" text-anchor="middle">RY(theta)</text>
+  <text class="tiny" x="800" y="269" text-anchor="middle">ansatz</text>
+  <circle cx="870" cy="156" r="6" fill="#7c3aed"/>
+  <line x1="870" y1="156" x2="870" y2="256" stroke="#7c3aed" stroke-width="2"/>
+  <circle cx="870" cy="256" r="15" class="gate-purple"/>
+  <line x1="860" y1="256" x2="880" y2="256" stroke="#7c3aed" stroke-width="2"/>
+  <line x1="870" y1="246" x2="870" y2="266" stroke="#7c3aed" stroke-width="2"/>
+
+  <rect class="gate-orange" x="892" y="127" width="58" height="58" rx="8"/>
+  <path d="M907 166a18 18 0 0 1 28 -22" fill="none" stroke="#f97316" stroke-width="2"/>
+  <line x1="923" y1="156" x2="936" y2="140" stroke="#f97316" stroke-width="2"/>
+  <text class="tiny" x="921" y="177" text-anchor="middle">measure</text>
+  <rect class="gate-orange" x="892" y="227" width="58" height="58" rx="8"/>
+  <path d="M907 266a18 18 0 0 1 28 -22" fill="none" stroke="#f97316" stroke-width="2"/>
+  <line x1="923" y1="256" x2="936" y2="240" stroke="#f97316" stroke-width="2"/>
+  <text class="tiny" x="921" y="277" text-anchor="middle">measure</text>
+
+  <rect class="panel" x="760" y="324" width="180" height="90" rx="8"/>
+  <text class="label" x="850" y="354" text-anchor="middle">RealAmplitudes</text>
+  <text class="small" x="850" y="378" text-anchor="middle">trainable theta</text>
+  <text class="small" x="850" y="396" text-anchor="middle">weights</text>
+  <line class="dash" x1="850" y1="324" x2="850" y2="290"/>
+
+  <line x1="920" y1="290" x2="920" y2="444" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <rect class="panel" x="650" y="444" width="290" height="88" rx="8"/>
+  <text class="label" x="795" y="472" text-anchor="middle">Sampler measurements</text>
+  <text class="small" x="795" y="494" text-anchor="middle">bitstring probabilities -> score</text>
+  <text class="small" x="795" y="512" text-anchor="middle">predicted_direction = down/up</text>
+
+  <rect class="note" x="40" y="270" width="288" height="144" rx="8"/>
+  <text class="label" x="60" y="298">Project choice</text>
+  <text class="small" x="60" y="324">The quantum model predicts direction,</text>
+  <text class="small" x="60" y="344">not an absolute closing price.</text>
+  <text class="small" x="60" y="372">Batch forecast price rows use a</text>
+  <text class="small" x="60" y="392">proxy derived from direction.</text>
+
+  <rect class="note" x="360" y="444" width="250" height="88" rx="8"/>
+  <text class="label" x="485" y="472" text-anchor="middle">Safe default</text>
+  <text class="small" x="485" y="494" text-anchor="middle">Run simulator first.</text>
+  <text class="small" x="485" y="512" text-anchor="middle">Use IBM hardware for small tests.</text>
+</svg>

@@ -49,6 +49,8 @@ Each diagram highlights one discussion topic for project walkthroughs.
 | Current architecture vs `[NEW]` roadmap | ![Clean architecture layers](Docs/graphs/clean_architecture_layers.svg) |
 | Semiconductor market rationale | ![Semiconductor supply chain](Docs/graphs/semiconductor_supply_chain.svg) |
 | Classical production path vs offline quantum comparison | ![Hybrid classical-quantum pipeline](Docs/graphs/hybrid_classical_quantum_pipeline.svg) |
+| VQC circuit architecture used in the benchmark | ![Quantum VQC circuit architecture](Docs/graphs/quantum_vqc_circuit_architecture.svg) |
+| Real hardware execution loop and budget controls | ![Quantum hardware execution loop](Docs/graphs/quantum_hardware_execution_loop.svg) |
 | Active API endpoints and forecast serving flow | ![API request flow](Docs/graphs/api_request_flow.svg) |
 
 ---
@@ -64,6 +66,7 @@ Each diagram highlights one discussion topic for project walkthroughs.
 | [Repository Structure](#repository-structure) | Actual folders and key files |
 | [Quickstart](#quickstart) | Local setup and execution |
 | [Pipeline](#pipeline) | Raw, refined, feature, training, and forecast generation |
+| [Quantum Benchmark Strategy](#quantum-benchmark-strategy) | Simulator, hardware, normalization, and cost controls |
 | [Promotion Policy](#promotion-policy) | Serving approval rules for classical models |
 | [API](#api) | Current FastAPI endpoints and behavior |
 | [Quality](#quality) | Tests, linting, and current CI status |
@@ -310,9 +313,19 @@ data/processed/future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_da
 
 ### 6. Compare classical and quantum paths
 
+Safe simulator run:
+
 ```bash
-python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --skip-s3
+python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantum-mode local --skip-s3
 ```
+
+Small IBM Quantum hardware run:
+
+```bash
+python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026-04-22 --quantum-mode cloud --quantum-shots 256 --quantum-optimizer spsa --quantum-optimizer-maxiter 15 --quantum-max-train-samples 24 --quantum-max-validation-samples 16 --quantum-max-test-samples 16 --skip-s3
+```
+
+Cloud mode can consume IBM Quantum runtime minutes. Use it only for controlled, single-symbol benchmark runs.
 
 ### 7. Backfill manifest artifact references
 
@@ -325,6 +338,50 @@ This script annotates historical manifests with:
 - `immutable_model_local_path`
 - `published_model_local_path`
 - `artifact_reference_mode`
+
+---
+
+## Quantum Benchmark Strategy
+
+The project treats the quantum path as an experimental benchmark, not as a production replacement for the classical LSTM. The intended comparison has three layers:
+
+| Layer | Purpose | IBM Quantum cost |
+|---|---|---:|
+| Classical Keras LSTM | Production baseline and next-day price regression | none |
+| Qiskit simulator | Quantum pipeline validation and repeatable local comparison | none |
+| IBM Quantum hardware | Real backend, real queue, real noise, and runtime-cost measurement | consumes minutes |
+
+The quantum model receives normalized and compressed inputs:
+
+```text
+market window/features
+    -> StandardScaler
+    -> PCA to num_qubits dimensions
+    -> MinMaxScaler into [0, pi]
+    -> ZZFeatureMap angle encoding
+    -> RealAmplitudes variational ansatz
+    -> Sampler measurements
+    -> direction class: down/up
+```
+
+Circuit diagrams:
+
+- [VQC circuit architecture](Docs/graphs/quantum_vqc_circuit_architecture.svg)
+- [Quantum hardware execution loop](Docs/graphs/quantum_hardware_execution_loop.svg)
+
+Recommended hardware limits:
+
+| Parameter | Suggested value |
+|---|---:|
+| `quantum_num_qubits` | 2 or 3 |
+| `quantum_feature_map_reps` | 1 |
+| `quantum_ansatz_reps` | 1 |
+| `quantum_shots` | 128 to 256 |
+| `quantum_optimizer` | `spsa` |
+| `quantum_optimizer_maxiter` | 10 to 20 |
+| `quantum_max_train_samples` | 16 to 32 |
+
+The final report should expose backend, execution mode, shots, optimizer, function evaluations, elapsed time, sample counts, directional metrics, and whether IBM Quantum minutes were consumed. The full decision note is in [Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md](Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md).
 
 ---
 

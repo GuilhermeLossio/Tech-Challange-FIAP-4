@@ -137,6 +137,42 @@ For monthly practical tests, the recommended design is to keep future prediction
 
 This separation keeps historical training lineage immutable while producing a serving-friendly dataset for Athena and future APIs. The quantum path remains a direction classifier, so its row stores a directional signal plus a deterministic price proxy for downstream consumers.
 
+### Quantum Benchmark Execution Model
+
+The quantum implementation is intentionally hybrid. Classical preprocessing prepares the input, Qiskit encodes the reduced feature vector into a variational circuit, and a classical optimizer updates the trainable circuit weights from sampler-based loss evaluations.
+
+![Quantum VQC circuit architecture](Docs/graphs/quantum_vqc_circuit_architecture.svg)
+
+The benchmark should be interpreted across three environments:
+
+| Environment | Role | Operational profile |
+|---|---|---|
+| Classical Keras LSTM | Main baseline | Full training data, price regression, online serving |
+| Qiskit simulator | Safe quantum validation | No IBM runtime minutes, repeatable experiments |
+| IBM Quantum hardware | Real-system benchmark | Queue time, noisy measurements, limited samples and shots |
+
+For the quantum path, raw 60-day price windows are not submitted directly to the circuit. The current strategy is to normalize and compress the feature space first:
+
+```text
+window/features -> StandardScaler -> PCA -> [0, pi] angle scaling -> ZZFeatureMap -> RealAmplitudes -> Sampler
+```
+
+This is important because circuit width and depth are constrained on current hardware. Fewer qubits, fewer repetitions, and fewer training samples make hardware experiments feasible while still allowing cost and time comparison.
+
+![Quantum hardware execution loop](Docs/graphs/quantum_hardware_execution_loop.svg)
+
+Recommended hardware mode constraints:
+
+- use `spsa` as the optimizer
+- keep `quantum_num_qubits` at 2 or 3
+- keep `feature_map_reps=1` and `ansatz_reps=1`
+- keep `quantum_shots` between 128 and 256 for initial runs
+- limit `quantum_optimizer_maxiter` to 10-20
+- start with one symbol, preferably `NVDA`
+- keep real hardware execution offline and materialized before API serving
+
+The API should continue to report `online_quantum_inference_enabled=False`. Quantum outputs served by the API must come from materialized forecast datasets, avoiding accidental IBM Quantum usage during user requests.
+
 ### 4. API Layer
 
 HTTP interface. Validates inputs, formats outputs, no business logic.
