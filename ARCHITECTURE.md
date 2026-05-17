@@ -170,6 +170,7 @@ Recommended hardware mode constraints:
 - limit `quantum_optimizer_maxiter` to 10-20
 - start with one symbol, preferably `NVDA`
 - keep real hardware execution offline and materialized before API serving
+- require `--confirm-ibm-runtime-cost` before any cloud run that submits jobs
 
 The API should continue to report `online_quantum_inference_enabled=False`. Quantum outputs served by the API must come from materialized forecast datasets, avoiding accidental IBM Quantum usage during user requests.
 

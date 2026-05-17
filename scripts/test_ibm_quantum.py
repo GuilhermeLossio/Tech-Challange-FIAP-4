@@ -29,7 +29,7 @@ How to use
    IBM_QUANTUM_INSTANCE=YOUR_INSTANCE_OR_CRN
 
 5) Run on real hardware:
-   python scripts/test_ibm_quantum.py --mode cloud --backend ibm_brisbane
+   python scripts/test_ibm_quantum.py --mode cloud --backend ibm_brisbane --confirm-ibm-runtime-cost
 
 Important notes
 ---------------
@@ -49,6 +49,29 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+def _argv_requests_unconfirmed_cloud_run(argv: list[str]) -> bool:
+    """Fast preflight before Qiskit imports to avoid accidental cloud jobs."""
+    mode_is_cloud = "--mode=cloud" in argv
+    for index, token in enumerate(argv[:-1]):
+        if token == "--mode" and argv[index + 1] == "cloud":
+            mode_is_cloud = True
+            break
+
+    return (
+        mode_is_cloud
+        and "--list-backends" not in argv
+        and "--confirm-ibm-runtime-cost" not in argv
+    )
+
+
+if _argv_requests_unconfirmed_cloud_run(sys.argv[1:]):
+    raise SystemExit(
+        "Refusing to submit an IBM Quantum job without explicit confirmation.\n"
+        "Cloud mode may consume IBM Quantum runtime minutes.\n"
+        "Re-run with --confirm-ibm-runtime-cost after reviewing shots and backend."
+    )
 
 
 try:
@@ -78,6 +101,7 @@ class ExecutionConfig:
     shots: int
     optimization_level: int
     list_backends: bool
+    confirm_ibm_runtime_cost: bool
 
 
 def clean_env_value(value: str) -> str:
@@ -162,6 +186,15 @@ def parse_args() -> ExecutionConfig:
         action="store_true",
         help="In cloud mode, list a few accessible real backends and exit.",
     )
+    parser.add_argument(
+        "--confirm-ibm-runtime-cost",
+        action="store_true",
+        help=(
+            "Required with --mode cloud unless --list-backends is used. "
+            "Confirms that this script may submit a job to IBM Quantum and "
+            "consume runtime minutes."
+        ),
+    )
     args = parser.parse_args()
     return ExecutionConfig(
         mode=args.mode,
@@ -169,6 +202,7 @@ def parse_args() -> ExecutionConfig:
         shots=args.shots,
         optimization_level=args.optimization_level,
         list_backends=args.list_backends,
+        confirm_ibm_runtime_cost=args.confirm_ibm_runtime_cost,
     )
 
 
@@ -329,6 +363,13 @@ def run_cloud(config: ExecutionConfig) -> None:
     if config.list_backends:
         list_cloud_backends(service)
         return
+
+    if not config.confirm_ibm_runtime_cost:
+        raise SystemExit(
+            "Refusing to submit an IBM Quantum job without explicit confirmation.\n"
+            "Cloud mode may consume IBM Quantum runtime minutes.\n"
+            "Re-run with --confirm-ibm-runtime-cost after reviewing shots and backend."
+        )
 
     backend = choose_cloud_backend(service, config.backend_name)
     backend_name = getattr(backend, "name", str(backend))

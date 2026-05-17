@@ -8,15 +8,38 @@ import sys
 # Simulador local — usa SIMULATOR_DEFAULTS automaticamente
 #python train_quantum.py --mode local
 
-# Hardware real — usa QUANTUM_HARDWARE_DEFAULTS automaticamente
-#python train_quantum.py --mode cloud --backend ibm_sherbrooke
+# Hardware real — usa QUANTUM_HARDWARE_DEFAULTS automaticamente e exige confirmação
+#python train_quantum.py --mode cloud --backend ibm_sherbrooke --confirm-ibm-runtime-cost
 
 # Override pontual ainda funciona normalmente
-#python train_quantum.py --mode cloud --shots 512 --optimizer-maxiter 20
+#python train_quantum.py --mode cloud --shots 512 --optimizer-maxiter 20 --confirm-ibm-runtime-cost
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _argv_requests_unconfirmed_cloud_run(argv: list[str]) -> bool:
+    """Fast preflight before dependency imports to avoid accidental cloud runs."""
+    mode_is_cloud = "--mode=cloud" in argv
+    for index, token in enumerate(argv[:-1]):
+        if token == "--mode" and argv[index + 1] == "cloud":
+            mode_is_cloud = True
+            break
+
+    return (
+        mode_is_cloud
+        and "--list-backends" not in argv
+        and "--confirm-ibm-runtime-cost" not in argv
+    )
+
+
+if _argv_requests_unconfirmed_cloud_run(sys.argv[1:]):
+    raise SystemExit(
+        "Refusing to run with --mode cloud without explicit confirmation.\n"
+        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
+        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+    )
 
 from src.application.use_cases.train_model_quantum import (  # noqa: E402
     QuantumTrainingInterruptedError,
@@ -99,6 +122,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--backend", dest="backend_name", default=None)
     parser.add_argument("--list-backends", action="store_true")
+    parser.add_argument(
+        "--confirm-ibm-runtime-cost",
+        action="store_true",
+        help=(
+            "Required with --mode cloud unless --list-backends is used. "
+            "Confirms that this run may submit jobs to IBM Quantum and "
+            "consume runtime minutes."
+        ),
+    )
 
     # --- circuit architecture ---
     parser.add_argument("--num-qubits", type=int, default=2)
@@ -168,6 +200,18 @@ def apply_mode_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if getattr(args, attr, None) is None:
             setattr(args, attr, value)
     return args
+
+
+def require_ibm_runtime_confirmation(args: argparse.Namespace) -> None:
+    """Prevent accidental IBM Quantum hardware submissions."""
+    if args.mode != "cloud" or args.list_backends or args.confirm_ibm_runtime_cost:
+        return
+
+    raise SystemExit(
+        "Refusing to run with --mode cloud without explicit confirmation.\n"
+        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
+        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+    )
 
 
 def parse_iso_date(value: str) -> date:
@@ -245,6 +289,7 @@ def print_mode_summary(args: argparse.Namespace) -> None:
 def main() -> int:
     args = parse_args()
     args = apply_mode_defaults(args)
+    require_ibm_runtime_confirmation(args)
 
     settings = TrainingPipelineSettings.from_env()
     upload_to_s3 = not args.skip_s3

@@ -71,7 +71,7 @@
   <text class="small" x="490" y="340" text-anchor="middle">--quantum-mode cloud</text>
   <text class="small" x="490" y="362" text-anchor="middle">Consumes minutes and queue time</text>
   <text class="small" x="490" y="384" text-anchor="middle">Use one symbol and low budget</text>
-  <text class="tiny" x="490" y="408" text-anchor="middle">Future guard: confirmation flag</text>
+  <text class="tiny" x="490" y="408" text-anchor="middle">Requires confirmation flag</text>
 
   <rect class="box" x="55" y="470" width="890" height="92" rx="8"/>
   <text class="label" x="80" y="498">Report fields to expose</text>

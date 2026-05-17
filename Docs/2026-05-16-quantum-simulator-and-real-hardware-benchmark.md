@@ -55,6 +55,7 @@ python scripts/train_and_compare_models.py \
   --quantum-max-train-samples 24 \
   --quantum-max-validation-samples 16 \
   --quantum-max-test-samples 16 \
+  --confirm-ibm-runtime-cost \
   --skip-s3
 ```
 
@@ -95,8 +96,8 @@ The diagrams added with this note document the circuit-level plan:
 - [Quantum hardware execution loop](graphs/quantum_hardware_execution_loop.svg)
 
 ## Suggested Next Steps
-1. Add an explicit CLI confirmation flag before allowing `--quantum-mode cloud`.
-2. Extend the comparison manifest with a `cost_profile` block.
-3. Add a report section named "Execution Environment and Cost".
-4. Keep `local` simulator mode as the default path for demos and repeated tests.
-5. Use cloud mode only for small single-symbol benchmark runs.
+1. Extend the comparison manifest with a `cost_profile` block.
+2. Add a report section named "Execution Environment and Cost".
+3. Keep `local` simulator mode as the default path for demos and repeated tests.
+4. Use cloud mode only for small single-symbol benchmark runs.
+5. Keep `--confirm-ibm-runtime-cost` mandatory for any job-submitting cloud command.

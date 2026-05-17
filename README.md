@@ -322,10 +322,10 @@ python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantu
 Small IBM Quantum hardware run:
 
 ```bash
-python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026-04-22 --quantum-mode cloud --quantum-shots 256 --quantum-optimizer spsa --quantum-optimizer-maxiter 15 --quantum-max-train-samples 24 --quantum-max-validation-samples 16 --quantum-max-test-samples 16 --skip-s3
+python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026-04-22 --quantum-mode cloud --quantum-shots 256 --quantum-optimizer spsa --quantum-optimizer-maxiter 15 --quantum-max-train-samples 24 --quantum-max-validation-samples 16 --quantum-max-test-samples 16 --confirm-ibm-runtime-cost --skip-s3
 ```
 
-Cloud mode can consume IBM Quantum runtime minutes. Use it only for controlled, single-symbol benchmark runs.
+Cloud mode can consume IBM Quantum runtime minutes. It requires `--confirm-ibm-runtime-cost` and should be used only for controlled, single-symbol benchmark runs.
 
 ### 7. Backfill manifest artifact references
 

@@ -9,6 +9,25 @@ import sys
 import time
 from typing import Any
 
+
+def _argv_requests_unconfirmed_cloud_run(argv: list[str]) -> bool:
+    """Fast preflight before heavy imports to avoid accidental cloud runs."""
+    mode_is_cloud = "--quantum-mode=cloud" in argv
+    for index, token in enumerate(argv[:-1]):
+        if token == "--quantum-mode" and argv[index + 1] == "cloud":
+            mode_is_cloud = True
+            break
+
+    return mode_is_cloud and "--confirm-ibm-runtime-cost" not in argv
+
+
+if _argv_requests_unconfirmed_cloud_run(sys.argv[1:]):
+    raise SystemExit(
+        "Refusing to run with --quantum-mode cloud without explicit confirmation.\n"
+        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
+        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+    )
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -178,6 +197,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Backend name for cloud mode. Omit to use least_busy.",
     )
+    parser.add_argument(
+        "--confirm-ibm-runtime-cost",
+        action="store_true",
+        help=(
+            "Required with --quantum-mode cloud. Confirms that this run may "
+            "submit jobs to IBM Quantum and consume runtime minutes."
+        ),
+    )
     parser.add_argument("--quantum-model-name-prefix", default="quantum_vqc")
 
     # --- Quantum circuit architecture ---
@@ -249,6 +276,18 @@ def apply_quantum_mode_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if getattr(args, attr, None) is None:
             setattr(args, attr, value)
     return args
+
+
+def require_ibm_runtime_confirmation(args: argparse.Namespace) -> None:
+    """Prevent accidental IBM Quantum hardware submissions."""
+    if args.quantum_mode != "cloud" or args.confirm_ibm_runtime_cost:
+        return
+
+    raise SystemExit(
+        "Refusing to run with --quantum-mode cloud without explicit confirmation.\n"
+        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
+        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+    )
 
 
 def print_run_summary(args: argparse.Namespace) -> None:
@@ -851,6 +890,7 @@ def build_run_token() -> str:
 def main() -> int:
     args = parse_args()
     args = apply_quantum_mode_defaults(args)
+    require_ibm_runtime_confirmation(args)
 
     settings = TrainingPipelineSettings.from_env()
     upload_to_s3 = not args.skip_s3

@@ -33,7 +33,7 @@ Adopt a smoke-test script with a Bell circuit and `SamplerV2`, prioritizing simp
 1. Run the script in local mode and validate the expected result.
 2. Configure the IBM Quantum Platform token and instance.
 3. List the backends accessible to the account.
-4. Run the same experiment on real hardware.
+4. Run the same experiment on real hardware with `--confirm-ibm-runtime-cost`.
 5. Evolve from the Bell test to an experiment connected to project features.
 
 ## Note
