@@ -139,6 +139,17 @@ class ComparisonAssetArtifact:
     keras_price_metrics: dict[str, float | None]
     keras_direction_metrics: DirectionComparisonMetrics
     quantum_direction_metrics: DirectionComparisonMetrics
+    quantum_execution_mode: str
+    quantum_backend_name: str
+    quantum_shots: int
+    quantum_optimizer_name: str
+    quantum_optimizer_maxiter: int
+    quantum_function_evaluations: int | None
+    quantum_objective_value: float | None
+    quantum_num_qubits: int
+    quantum_train_samples: int
+    quantum_validation_samples: int
+    quantum_test_samples: int
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +719,137 @@ def _interpret_direction(metrics: DirectionComparisonMetrics, model_name: str) -
     return "  \n".join(notes) if notes else "Metrics are within expected range for the test split."
 
 
+def _format_optional_float(value: float | None, precision: int = 4) -> str:
+    if value is None:
+        return "not captured"
+    return f"{value:.{precision}f}"
+
+
+def _format_optional_int(value: int | None) -> str:
+    if value is None:
+        return "not captured"
+    return str(value)
+
+
+def _describe_quantum_environment(execution_mode: str, backend_name: str) -> tuple[str, str, str]:
+    normalized_mode = execution_mode.lower()
+    if normalized_mode == "cloud":
+        return (
+            "IBM Quantum real hardware",
+            "yes",
+            (
+                f"`{backend_name}` is treated as a physical IBM Quantum backend. "
+                "Results are affected by real NISQ noise: decoherence, gate errors, "
+                "readout errors, queue latency, and shot noise."
+            ),
+        )
+
+    return (
+        "Qiskit simulator / fake backend",
+        "no",
+        (
+            f"`{backend_name}` is a local simulated backend path. It is useful for "
+            "repeatable development and report generation, but it is not evidence "
+            "of physical QPU execution."
+        ),
+    )
+
+
+def _build_quantum_methodology_section(
+    *,
+    execution_mode: str,
+    backend_name: str,
+    shots: int,
+    optimizer_name: str,
+    optimizer_maxiter: int,
+    function_evaluations: int | None,
+    objective_value: float | None,
+    num_qubits: int,
+    train_samples: int,
+    validation_samples: int,
+    test_samples: int,
+    quantum_seconds: float,
+) -> str:
+    environment_label, consumes_ibm_minutes, environment_note = _describe_quantum_environment(
+        execution_mode=execution_mode,
+        backend_name=backend_name,
+    )
+    qpu_seconds = "not captured by the current VQC abstraction"
+    payg_estimate = "not estimated until QPU seconds are captured"
+    if execution_mode.lower() != "cloud":
+        qpu_seconds = "0 for IBM hardware; local simulator time only"
+        payg_estimate = "$0.00 IBM QPU cost"
+
+    return f"""## 5. Execution environment and cost profile
+
+### 5.1 Current quantum run
+
+| Field | Value |
+|---|---:|
+| Execution environment | {environment_label} |
+| Execution mode | `{execution_mode}` |
+| Backend | `{backend_name}` |
+| IBM runtime minutes consumed | {consumes_ibm_minutes} |
+| Wall-clock quantum training time | `{quantum_seconds:.2f} s` |
+| QPU seconds consumed | {qpu_seconds} |
+| Pay-as-you-go equivalent estimate | {payg_estimate} |
+| Shots | `{shots}` |
+| Optimizer | `{optimizer_name}` |
+| Optimizer max iterations | `{optimizer_maxiter}` |
+| Function evaluations | `{_format_optional_int(function_evaluations)}` |
+| Objective value | `{_format_optional_float(objective_value)}` |
+| Qubits | `{num_qubits}` |
+| Samples | train=`{train_samples}`, validation=`{validation_samples}`, test=`{test_samples}` |
+
+{environment_note}
+
+### 5.2 What changes on IBM Quantum real hardware
+
+When `execution_mode=cloud`, the experiment should be described as **IBM Quantum via API key on real superconducting NISQ hardware**, not as local simulation. The backend executes circuits on physical qubits, so the methodology must report hardware noise and operational latency.
+
+| Category | IBM real-hardware variable | Article note |
+|---|---|---|
+| Latency | Queue time | Can range from minutes to hours depending on backend load |
+| Latency | Real job execution time | Usually seconds for small circuits, but not under API request control |
+| Latency | Total wall-clock time | Queue + transpilation + QPU execution + result retrieval |
+| Serving | D+1 online inference latency | Not viable for real-time API serving; use offline materialization |
+| Noise | Gate error rate | Backend-reported calibration value; often order-of-magnitude 0.1%-1% per gate |
+| Noise | Readout error | Backend-reported calibration value; often order-of-magnitude 1%-5% |
+| Noise | T1 / T2 coherence | Backend calibration should be captured with the run |
+| Mitigation | Error mitigation | Compare unmitigated vs Qiskit Runtime mitigation when enabled |
+
+### 5.3 IBM job observability checklist
+
+The current VQC training artifact captures backend, shots, optimizer, objective value, and function evaluations. For a publication-grade IBM hardware experiment, extend the runner to persist:
+
+| Item to log | Why it matters |
+|---|---|
+| `job.result().metadata` | Execution metadata returned by Runtime |
+| `job.metrics()` | Queue time, execution time, and backend system timing when available |
+| Backend name | Example: `ibm_brisbane`, `ibm_sherbrooke` |
+| QPU seconds | Required for free-plan budget and paid-plan cost simulation |
+| Shots | Controls variance and runtime cost |
+| Circuit depth after transpilation | Directly affects noise exposure |
+| Two-qubit gate count after transpilation | Usually the dominant hardware error source |
+| Bitstring histogram | Shows measured quantum output distribution |
+| Expectation value | Provides observable-level summary |
+| Variance across runs | Repeat 3-5 times and report mean + standard deviation |
+| Mitigation mode | Compare no mitigation vs available Runtime mitigation options |
+
+### 5.4 Cost model note
+
+For the article, record the Open Plan budget as consumed QPU seconds and keep the paid cost as a transparent simulation. If using the 2025 article assumption of **US$1.60 per QPU second**, compute:
+
+```text
+estimated_paid_cost_usd = qpu_seconds * 1.60
+```
+
+Do not treat that number as a current IBM price unless it is verified at writing time; keep it labelled as the article's cost-simulation assumption.
+
+---
+"""
+
+
 def write_markdown_report(
     *,
     destination: Path,
@@ -719,6 +861,17 @@ def write_markdown_report(
     keras_price_metrics: dict[str, float | None],
     keras_direction_metrics: DirectionComparisonMetrics,
     quantum_direction_metrics: DirectionComparisonMetrics,
+    quantum_execution_mode: str,
+    quantum_backend_name: str,
+    quantum_shots: int,
+    quantum_optimizer_name: str,
+    quantum_optimizer_maxiter: int,
+    quantum_function_evaluations: int | None,
+    quantum_objective_value: float | None,
+    quantum_num_qubits: int,
+    quantum_train_samples: int,
+    quantum_validation_samples: int,
+    quantum_test_samples: int,
     dashboard_path: Path,
     confusion_chart_path: Path,
 ) -> None:
@@ -741,6 +894,20 @@ def write_markdown_report(
     # --- shorthand aliases ---
     k = keras_direction_metrics
     q = quantum_direction_metrics
+    quantum_methodology_section = _build_quantum_methodology_section(
+        execution_mode=quantum_execution_mode,
+        backend_name=quantum_backend_name,
+        shots=quantum_shots,
+        optimizer_name=quantum_optimizer_name,
+        optimizer_maxiter=quantum_optimizer_maxiter,
+        function_evaluations=quantum_function_evaluations,
+        objective_value=quantum_objective_value,
+        num_qubits=quantum_num_qubits,
+        train_samples=quantum_train_samples,
+        validation_samples=quantum_validation_samples,
+        test_samples=quantum_test_samples,
+        quantum_seconds=quantum_seconds,
+    )
 
     report = f"""# Model Comparison Report — `{symbol}`
 
@@ -835,7 +1002,28 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 
 ---
 
-## 5. How to explain the models to investors
+{quantum_methodology_section}
+
+## 6. Article comparison table
+
+| Dimension | Keras LSTM | Qiskit / IBM real hardware |
+|---|---|---|
+| Model role | Production baseline | Experimental NISQ benchmark |
+| Primary output | Next-day price regression | Next-day direction classification |
+| Trainable parameters | Thousands, depending on LSTM shape | Dozens of circuit angles, depending on ansatz |
+| Training time | `{keras_seconds:.2f} s` in this run | `{quantum_seconds:.2f} s` wall-clock in this run |
+| Inference latency | Millisecond-scale locally; article shorthand can use ~5 ms | Minutes or more on hardware because of queue time |
+| Estimated experiment cost | Near-zero locally; article may model ~$0.01 EC2-equivalent | Measure via QPU seconds / `job.metrics()` for paid-cost estimate |
+| Intrinsic noise | Deterministic with fixed seed and hardware | Stochastic: shots, readout noise, gate noise, decoherence |
+| Reproducibility | High with fixed seeds and artifacts | Partial; repeat runs and report mean + standard deviation |
+| API serving fit | Suitable for `POST /predict` | Serve only from offline materialized parquet |
+| Scientific contribution | Strong baseline for comparison | Real-hardware behavior is more publishable than simulator-only QML |
+
+**Methodology requirement:** for real IBM hardware, repeat each quantum experiment at least **3-5 times** with the same configuration and report mean plus standard deviation. This is necessary because shot noise and hardware calibration drift can change results between runs.
+
+---
+
+## 7. How to explain the models to investors
 
 ### Keras LSTM
 
@@ -853,19 +1041,20 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 
 ---
 
-## 6. Recommendations
+## 8. Recommendations
 
 | # | Recommendation |
 |---|---|
 | 1 | Use **Keras LSTM** for absolute price forecasting and level-based entry/exit signal generation. |
 | 2 | Treat **Quantum VQC** as an experimental directional model — not a production replacement for Keras yet. |
 | 3 | The fairest apples-to-apples comparison between both approaches is the **directional metrics table** (Section 3). |
-| 4 | If Keras MAPE exceeds 5%, consider adjusting the lookback window or adding volume-based features. |
-| 5 | For the Quantum model, increasing `quantum_max_train_samples` improves generalisation at the cost of training time. |
+| 4 | For IBM hardware experiments, report backend, queue/runtime metrics, shots, circuit depth, and repeated-run variance. |
+| 5 | If Keras MAPE exceeds 5%, consider adjusting the lookback window or adding volume-based features. |
+| 6 | For the Quantum model, increasing `quantum_max_train_samples` improves generalisation at the cost of training time. |
 
 ---
 
-## 7. Visual assets
+## 9. Visual assets
 
 | Artifact | Local path |
 |---|---|
@@ -1052,6 +1241,17 @@ def main() -> int:
             keras_price_metrics=keras_price_metrics,
             keras_direction_metrics=keras_direction_metrics,
             quantum_direction_metrics=quantum_direction_metrics,
+            quantum_execution_mode=quantum_asset.execution_mode,
+            quantum_backend_name=quantum_asset.backend_name,
+            quantum_shots=args.quantum_shots,
+            quantum_optimizer_name=quantum_asset.optimizer_name,
+            quantum_optimizer_maxiter=quantum_asset.optimizer_maxiter,
+            quantum_function_evaluations=quantum_asset.function_evaluations,
+            quantum_objective_value=quantum_asset.objective_value,
+            quantum_num_qubits=quantum_asset.num_qubits,
+            quantum_train_samples=quantum_asset.sampled_counts.get("train", 0),
+            quantum_validation_samples=quantum_asset.sampled_counts.get("validation", 0),
+            quantum_test_samples=quantum_asset.sampled_counts.get("test", 0),
             dashboard_path=dashboard_path,
             confusion_chart_path=confusion_chart_path,
         )
@@ -1069,6 +1269,17 @@ def main() -> int:
                 keras_price_metrics=keras_price_metrics,
                 keras_direction_metrics=keras_direction_metrics,
                 quantum_direction_metrics=quantum_direction_metrics,
+                quantum_execution_mode=quantum_asset.execution_mode,
+                quantum_backend_name=quantum_asset.backend_name,
+                quantum_shots=args.quantum_shots,
+                quantum_optimizer_name=quantum_asset.optimizer_name,
+                quantum_optimizer_maxiter=quantum_asset.optimizer_maxiter,
+                quantum_function_evaluations=quantum_asset.function_evaluations,
+                quantum_objective_value=quantum_asset.objective_value,
+                quantum_num_qubits=quantum_asset.num_qubits,
+                quantum_train_samples=quantum_asset.sampled_counts.get("train", 0),
+                quantum_validation_samples=quantum_asset.sampled_counts.get("validation", 0),
+                quantum_test_samples=quantum_asset.sampled_counts.get("test", 0),
             )
         )
 

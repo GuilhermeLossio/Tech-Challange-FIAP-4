@@ -327,6 +327,8 @@ python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026
 
 Cloud mode can consume IBM Quantum runtime minutes. It requires `--confirm-ibm-runtime-cost` and should be used only for controlled, single-symbol benchmark runs.
 
+The generated comparison report includes directional metrics, confusion matrices, execution environment, backend, shots, optimizer budget, available function-evaluation metadata, IBM hardware observability guidance, and an article-ready Keras vs Qiskit comparison table.
+
 ### 7. Backfill manifest artifact references
 
 ```bash
@@ -381,7 +383,7 @@ Recommended hardware limits:
 | `quantum_optimizer_maxiter` | 10 to 20 |
 | `quantum_max_train_samples` | 16 to 32 |
 
-The final report should expose backend, execution mode, shots, optimizer, function evaluations, elapsed time, sample counts, directional metrics, and whether IBM Quantum minutes were consumed. The full decision note is in [Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md](Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md).
+The final report exposes backend, execution mode, shots, optimizer, function evaluations when available, elapsed time, sample counts, directional metrics, and whether IBM Quantum minutes were consumed. The full decision note is in [Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md](Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md).
 
 ---
 

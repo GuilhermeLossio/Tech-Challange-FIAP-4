@@ -96,8 +96,8 @@ The diagrams added with this note document the circuit-level plan:
 - [Quantum hardware execution loop](graphs/quantum_hardware_execution_loop.svg)
 
 ## Suggested Next Steps
-1. Extend the comparison manifest with a `cost_profile` block.
-2. Add a report section named "Execution Environment and Cost".
+1. Extend the comparison manifest with a dedicated `cost_profile` block if IBM job metrics become directly available.
+2. Capture `job.metrics()` and `job.result().metadata` in a lower-level IBM Runtime runner for publication-grade hardware experiments.
 3. Keep `local` simulator mode as the default path for demos and repeated tests.
 4. Use cloud mode only for small single-symbol benchmark runs.
 5. Keep `--confirm-ibm-runtime-cost` mandatory for any job-submitting cloud command.
