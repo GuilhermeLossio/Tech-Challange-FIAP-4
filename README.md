@@ -331,6 +331,12 @@ The script refuses `--quantum-mode cloud` before heavy imports unless that confi
 
 The generated `comparison_report.md` includes directional metrics, confusion matrices, execution environment, backend, shots, optimizer budget, available function-evaluation metadata, IBM hardware observability guidance, a cost-profile note, and an article-ready Keras vs Qiskit comparison table.
 
+When S3 upload is enabled, this comparison script publishes the Keras and Quantum training artifacts plus the comparison dashboard, confusion-matrix image, markdown report, and comparison manifest under the configured model bucket/prefix. Use `--skip-s3` to keep all of those artifacts local only.
+
+For fair directional metrics, the comparison script trains a separate Keras LSTM classifier with `binary_crossentropy`, balanced class weights, the same sampled split sizes used by the VQC, and an `Always Up` dummy baseline. The original Keras price regressor is still trained for MAE/RMSE/MAPE context.
+
+Each comparison run also writes `unified_comparison_report.md` at the run root (`models/comparison_runs/extraction_date=<date>/generated_at=<timestamp>/`). This file consolidates the per-symbol reports generated in that same moment and is also uploaded to S3 when S3 publication is enabled.
+
 ### 7. Backfill manifest artifact references
 
 ```bash

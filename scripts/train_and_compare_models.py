@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+import json
 from pathlib import Path
 import os
 import sys
@@ -35,6 +36,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -95,7 +97,7 @@ SIMULATOR_DEFAULTS: dict[str, int | str] = {
 
 # On real hardware every shot costs real queue + execution time.
 # SPSA estimates gradients with only 2 circuit executions per iteration
-# regardless of parameter count — it was designed for noisy quantum hardware.
+# regardless of parameter count; it was designed for noisy quantum hardware.
 QUANTUM_HARDWARE_DEFAULTS: dict[str, int | str] = {
     "quantum_shots": 256,
     "quantum_optimizer": "spsa",
@@ -130,15 +132,31 @@ class DirectionComparisonMetrics:
 class ComparisonAssetArtifact:
     symbol: str
     keras_training_seconds: float
+    keras_price_training_seconds: float
     quantum_training_seconds: float
     keras_model_local_path: str
+    keras_model_s3_uri: str | None
+    keras_history_s3_uri: str | None
+    keras_manifest_s3_uri: str | None
+    keras_direction_model_local_path: str
+    keras_direction_model_s3_uri: str | None
+    keras_direction_history_local_path: str
+    keras_direction_history_s3_uri: str | None
     quantum_model_local_path: str
+    quantum_model_s3_uri: str | None
+    quantum_preprocessor_s3_uri: str | None
+    quantum_training_details_s3_uri: str | None
+    quantum_manifest_s3_uri: str | None
     dashboard_local_path: str
+    dashboard_s3_uri: str | None
     confusion_matrix_local_path: str
+    confusion_matrix_s3_uri: str | None
     report_local_path: str
+    report_s3_uri: str | None
     keras_price_metrics: dict[str, float | None]
     keras_direction_metrics: DirectionComparisonMetrics
     quantum_direction_metrics: DirectionComparisonMetrics
+    dummy_direction_metrics: DirectionComparisonMetrics
     quantum_execution_mode: str
     quantum_backend_name: str
     quantum_shots: int
@@ -191,6 +209,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keras-learning-rate", type=float, default=0.001)
     parser.add_argument("--keras-verbose", type=int, choices=(0, 1, 2), default=0)
     parser.add_argument("--keras-model-name-prefix", default="lstm")
+    parser.add_argument("--keras-direction-model-name-prefix", default="lstm_direction")
+    parser.add_argument(
+        "--keras-direction-normalization",
+        choices=("global", "local-zscore"),
+        default="local-zscore",
+        help=(
+            "Feature normalization for the directional LSTM used in the fair comparison. "
+            "`global` uses refined scaled lag columns; `local-zscore` normalizes each "
+            "lookback window independently."
+        ),
+    )
 
     # --- Quantum execution mode ---
     parser.add_argument(
@@ -198,8 +227,8 @@ def parse_args() -> argparse.Namespace:
         choices=("local", "cloud"),
         default="local",
         help=(
-            "local  → simulator (high shots, many samples, COBYLA). "
-            "cloud  → real backend (low shots, few samples, SPSA). "
+            "local  -> simulator (high shots, many samples, COBYLA). "
+            "cloud  -> real backend (low shots, few samples, SPSA). "
             "Defaults are set automatically; override with the flags below."
         ),
     )
@@ -273,7 +302,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-s3",
         action="store_true",
-        help="Only persist trained model artifacts locally; skip S3 upload.",
+        help="Only persist trained model and comparison artifacts locally; skip S3 upload.",
     )
 
     return parser.parse_args()
@@ -315,7 +344,7 @@ def print_run_summary(args: argparse.Namespace) -> None:
     print(f"  patience       : {args.keras_patience}")
     print(f"  learning rate  : {args.keras_learning_rate}")
     print()
-    print(f"[Quantum VQC — mode={args.quantum_mode.upper()}]")
+    print(f"[Quantum VQC - mode={args.quantum_mode.upper()}]")
     print(f"  optimizer      : {args.quantum_optimizer}  (maxiter={args.quantum_optimizer_maxiter})")
     print(f"  shots          : {args.quantum_shots}")
     print(
@@ -389,6 +418,17 @@ def build_model_s3_store(
     )
 
 
+def upload_comparison_artifact(
+    *,
+    s3_store: S3RawStore | None,
+    local_path: Path,
+    relative_path: Path,
+) -> str | None:
+    if s3_store is None:
+        return None
+    return s3_store.upload_file(local_path=local_path, relative_path=relative_path)
+
+
 def load_training_frame_with_scaler(
     *,
     processed_root_dir: Path,
@@ -434,6 +474,270 @@ def compute_direction_metrics(
             "fn": int(fn),
             "tp": int(tp),
         },
+    )
+
+
+def limit_direction_samples(
+    *,
+    X: np.ndarray,
+    y: np.ndarray,
+    frame: pd.DataFrame,
+    max_samples: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    if len(X) == 0 or len(X) <= max_samples:
+        return X, y, frame.copy()
+
+    from sklearn.model_selection import train_test_split
+
+    indices = np.arange(len(X))
+    stratify = y if np.unique(y).size > 1 else None
+    selected_indices, _ = train_test_split(
+        indices,
+        train_size=max_samples,
+        random_state=seed,
+        stratify=stratify,
+    )
+    selected_indices = np.sort(selected_indices)
+    return X[selected_indices], y[selected_indices], frame.iloc[selected_indices].copy()
+
+
+def normalize_direction_features(
+    X: np.ndarray,
+    *,
+    method: str,
+) -> np.ndarray:
+    if method == "global":
+        return X.astype(np.float32)
+    if method != "local-zscore":
+        raise ValueError(f"Unsupported normalization method: {method!r}")
+
+    means = X.mean(axis=1, keepdims=True)
+    stds = X.std(axis=1, keepdims=True)
+    safe_stds = np.where(stds < 1e-8, 1.0, stds)
+    return ((X - means) / safe_stds).astype(np.float32)
+
+
+def build_directional_lstm_dataset(
+    *,
+    frame: pd.DataFrame,
+    scaler_metadata: dict[str, float],
+    target_column: str,
+    lookback: int,
+    normalization: str,
+    max_train_samples: int,
+    max_validation_samples: int,
+    max_test_samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    feature_columns = [
+        f"{target_column}_t_minus_{lag}"
+        for lag in range(lookback, 0, -1)
+    ]
+    target_raw_column = f"y_{target_column}"
+    current_scaled_column = f"{target_column}_t_minus_1"
+
+    missing_columns = [
+        column
+        for column in [*feature_columns, target_raw_column, current_scaled_column, "split"]
+        if column not in frame.columns
+    ]
+    if missing_columns:
+        raise ValueError(
+            "Refined dataset is missing expected directional columns: "
+            f"{missing_columns}"
+        )
+
+    ordered = frame.copy()
+    if "target_date" in ordered.columns:
+        ordered["target_date"] = pd.to_datetime(ordered["target_date"])
+        ordered = ordered.sort_values("target_date").reset_index(drop=True)
+
+    raw_features = ordered.loc[:, feature_columns].to_numpy(dtype=np.float32)
+    X = normalize_direction_features(raw_features, method=normalization).reshape(
+        -1,
+        lookback,
+        1,
+    )
+    current_close = inverse_scale(
+        ordered[current_scaled_column].to_numpy(dtype=np.float32),
+        min_offset=scaler_metadata["min_offset"],
+        scale=scaler_metadata["scale"],
+    )
+    actual_next_close = ordered[target_raw_column].to_numpy(dtype=np.float32)
+    if "target_direction" in ordered.columns:
+        y = ordered["target_direction"].astype(int).to_numpy()
+    else:
+        y = (actual_next_close > current_close).astype(int)
+    split = ordered["split"].astype(str).str.lower()
+
+    def split_data(name: str, max_samples: int, split_seed: int) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        pd.DataFrame,
+    ]:
+        mask = (split == name).to_numpy()
+        return limit_direction_samples(
+            X=X[mask],
+            y=y[mask],
+            frame=ordered.loc[mask].reset_index(drop=True),
+            max_samples=max_samples,
+            seed=split_seed,
+        )
+
+    X_train, y_train, train_frame = split_data("train", max_train_samples, seed)
+    X_validation, y_validation, validation_frame = split_data(
+        "validation",
+        max_validation_samples,
+        seed + 1,
+    )
+    X_test, y_test, test_frame = split_data("test", max_test_samples, seed + 2)
+
+    if len(X_train) == 0:
+        raise ValueError("Directional LSTM train split is empty.")
+    if len(X_test) == 0:
+        raise ValueError("Directional LSTM test split is empty.")
+    if np.unique(y_train).size < 2:
+        raise ValueError(
+            "Directional LSTM train split kept only one class. "
+            "Increase max_train_samples or change the random seed."
+        )
+
+    return {
+        "X_train": X_train,
+        "y_train": y_train,
+        "train_frame": train_frame,
+        "X_validation": X_validation,
+        "y_validation": y_validation,
+        "validation_frame": validation_frame,
+        "X_test": X_test,
+        "y_test": y_test,
+        "test_frame": test_frame,
+        "sampled_counts": {
+            "train": int(len(X_train)),
+            "validation": int(len(X_validation)),
+            "test": int(len(X_test)),
+        },
+    }
+
+
+def build_directional_lstm_model(
+    *,
+    input_shape: tuple[int, int],
+    learning_rate: float,
+) -> tf.keras.Model:
+    model = tf.keras.Sequential(
+        [
+            tf.keras.Input(shape=input_shape),
+            tf.keras.layers.LSTM(64, return_sequences=True),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.LSTM(32),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Dense(16, activation="relu"),
+            tf.keras.layers.Dense(1, activation="sigmoid"),
+        ]
+    )
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+        loss="binary_crossentropy",
+        metrics=[
+            "accuracy",
+            tf.keras.metrics.Precision(name="precision"),
+            tf.keras.metrics.Recall(name="recall"),
+        ],
+    )
+    return model
+
+
+def train_directional_lstm_classifier(
+    *,
+    dataset: dict[str, Any],
+    destination_model_path: Path,
+    destination_history_path: Path,
+    epochs: int,
+    batch_size: int,
+    patience: int,
+    learning_rate: float,
+    seed: int,
+    verbose: int,
+) -> tuple[DirectionComparisonMetrics, dict[str, Any]]:
+    destination_model_path.parent.mkdir(parents=True, exist_ok=True)
+    destination_history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    np.random.seed(seed)
+    tf.keras.utils.set_random_seed(seed)
+    tf.random.set_seed(seed)
+
+    model = build_directional_lstm_model(
+        input_shape=dataset["X_train"].shape[1:],
+        learning_rate=learning_rate,
+    )
+    classes = np.array([0, 1])
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=dataset["y_train"],
+    )
+    class_weight = {int(label): float(weight) for label, weight in zip(classes, weights)}
+    monitor_metric = "val_loss" if len(dataset["X_validation"]) else "loss"
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor=monitor_metric,
+            patience=patience,
+            restore_best_weights=True,
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(destination_model_path),
+            monitor=monitor_metric,
+            save_best_only=True,
+        ),
+    ]
+    fit_kwargs: dict[str, Any] = {
+        "x": dataset["X_train"],
+        "y": dataset["y_train"],
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "callbacks": callbacks,
+        "class_weight": class_weight,
+        "verbose": verbose,
+        "shuffle": False,
+    }
+    if len(dataset["X_validation"]):
+        fit_kwargs["validation_data"] = (dataset["X_validation"], dataset["y_validation"])
+
+    history = model.fit(**fit_kwargs)
+    if not destination_model_path.exists():
+        model.save(destination_model_path)
+    model = tf.keras.models.load_model(destination_model_path)
+    probabilities = model.predict(dataset["X_test"], verbose=0).reshape(-1)
+    predictions = (probabilities >= 0.5).astype(int)
+    metrics = compute_direction_metrics(y_true=dataset["y_test"], y_pred=predictions)
+
+    history_payload = {
+        "model_family": "keras_lstm_direction_classifier",
+        "task_type": "next_day_direction_classification",
+        "loss": "binary_crossentropy",
+        "threshold": 0.5,
+        "class_weight": class_weight,
+        "sampled_counts": dataset["sampled_counts"],
+        "monitor_metric": monitor_metric,
+        "epochs_ran": len(history.history.get("loss", [])),
+        "history": {
+            key: [float(value) for value in values]
+            for key, values in history.history.items()
+        },
+    }
+    destination_history_path.write_text(
+        json.dumps(history_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return metrics, history_payload
+
+
+def build_always_up_baseline_metrics(*, y_test: np.ndarray) -> DirectionComparisonMetrics:
+    return compute_direction_metrics(
+        y_true=y_test,
+        y_pred=np.ones_like(y_test, dtype=int),
     )
 
 
@@ -509,6 +813,7 @@ def save_dashboard(
     keras_price_metrics: dict[str, float | None],
     keras_direction_metrics: DirectionComparisonMetrics,
     quantum_direction_metrics: DirectionComparisonMetrics,
+    dummy_direction_metrics: DirectionComparisonMetrics,
     price_comparison_frame: pd.DataFrame,
     sample_plot_points: int,
 ) -> None:
@@ -527,22 +832,31 @@ def save_dashboard(
         axes[0, 0].text(index, value, f"{value:.2f}s", ha="center", va="bottom")
 
     metric_names = ["Accuracy", "Precision", "Recall", "F1"]
-    keras_values = [
-        keras_direction_metrics.accuracy,
-        keras_direction_metrics.precision,
-        keras_direction_metrics.recall,
-        keras_direction_metrics.f1,
-    ]
-    quantum_values = [
-        quantum_direction_metrics.accuracy,
-        quantum_direction_metrics.precision,
-        quantum_direction_metrics.recall,
-        quantum_direction_metrics.f1,
-    ]
+    metric_payload = {
+        "Keras LSTM": [
+            keras_direction_metrics.accuracy,
+            keras_direction_metrics.precision,
+            keras_direction_metrics.recall,
+            keras_direction_metrics.f1,
+        ],
+        "Quantum VQC": [
+            quantum_direction_metrics.accuracy,
+            quantum_direction_metrics.precision,
+            quantum_direction_metrics.recall,
+            quantum_direction_metrics.f1,
+        ],
+        "Always Up": [
+            dummy_direction_metrics.accuracy,
+            dummy_direction_metrics.precision,
+            dummy_direction_metrics.recall,
+            dummy_direction_metrics.f1,
+        ],
+    }
     positions = np.arange(len(metric_names))
-    width = 0.35
-    axes[0, 1].bar(positions - width / 2, keras_values, width=width, label="Keras LSTM")
-    axes[0, 1].bar(positions + width / 2, quantum_values, width=width, label="Quantum VQC")
+    width = 0.25
+    offsets = [-width, 0.0, width]
+    for offset, (label, values) in zip(offsets, metric_payload.items()):
+        axes[0, 1].bar(positions + offset, values, width=width, label=label)
     axes[0, 1].set_title("Directional Test Metrics")
     axes[0, 1].set_xticks(positions)
     axes[0, 1].set_xticklabels(metric_names)
@@ -577,7 +891,7 @@ def save_dashboard(
             "Keras LSTM:",
             "1. Reads the last 60 closing prices.",
             "2. Learns a time pattern in those prices.",
-            "3. Predicts the next closing price.",
+            "3. Classifies the next move as up or down.",
             "",
             "Quantum VQC:",
             "1. Compresses the 60-price window into a few latent factors.",
@@ -610,14 +924,16 @@ def save_confusion_matrix_chart(
     symbol: str,
     keras_metrics: DirectionComparisonMetrics,
     quantum_metrics: DirectionComparisonMetrics,
+    dummy_metrics: DirectionComparisonMetrics,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     fig.suptitle(f"Directional Confusion Matrices - {symbol}", fontsize=15, fontweight="bold")
 
     models = [
         ("Keras LSTM", keras_metrics.confusion_matrix),
         ("Quantum VQC", quantum_metrics.confusion_matrix),
+        ("Always Up", dummy_metrics.confusion_matrix),
     ]
     for axis, (title, matrix_payload) in zip(axes, models):
         matrix = np.array(
@@ -648,13 +964,13 @@ def save_confusion_matrix_chart(
 Improved replacement for write_markdown_report in compare_models.py
 
 Drop this function in place of the original in scripts/compare_models.py.
-The signature is identical — no other part of the script needs to change.
+The signature is identical; no other part of the script needs to change.
 """
 
 def _bar(value: float, width: int = 20) -> str:
     """ASCII progress bar proportional to a value between 0 and 1."""
     filled = round(value * width)
-    return "█" * filled + "░" * (width - filled)
+    return "#" * filled + "." * (width - filled)
 
 
 def _confusion_block(matrix: dict[str, int]) -> str:
@@ -674,10 +990,10 @@ def _confusion_block(matrix: dict[str, int]) -> str:
         f"          Up    [{fn:>6}]  [{tp:>6}]",
         "```",
         "",
-        f"- **True negatives (TN):**  {tn}  — correctly predicted a downward move",
-        f"- **False positives (FP):** {fp}  — predicted up, actual was down",
-        f"- **False negatives (FN):** {fn}  — predicted down, actual was up",
-        f"- **True positives (TP):**  {tp}  — correctly predicted an upward move",
+        f"- **True negatives (TN):**  {tn}  - correctly predicted a downward move",
+        f"- **False positives (FP):** {fp}  - predicted up, actual was down",
+        f"- **False negatives (FN):** {fn}  - predicted down, actual was up",
+        f"- **True positives (TP):**  {tp}  - correctly predicted an upward move",
         f"- **Implied accuracy:**     {accuracy:.1%}",
     ]
     return "\n".join(lines)
@@ -690,26 +1006,26 @@ def _interpret_direction(metrics: DirectionComparisonMetrics, model_name: str) -
     if metrics.accuracy >= 0.60:
         notes.append(
             f"**{model_name}** predicted direction correctly in **{metrics.accuracy:.1%}** "
-            f"of cases — above the 60% reference threshold."
+            f"of cases - above the 60% reference threshold."
         )
     elif metrics.accuracy >= 0.50:
         notes.append(
             f"**{model_name}** predicted direction correctly in **{metrics.accuracy:.1%}** "
-            f"of cases — marginally above chance."
+            f"of cases - marginally above chance."
         )
     else:
         notes.append(
             f"**{model_name}** predicted direction correctly in only **{metrics.accuracy:.1%}** "
-            f"of cases — below chance; consider revisiting features or hyperparameters."
+            f"of cases - below chance; consider revisiting features or hyperparameters."
         )
 
     if metrics.precision < 0.50:
         notes.append(
-            "Low precision: many false positives — the model tends to predict upward moves that do not materialise."
+            "Low precision: many false positives - the model tends to predict upward moves that do not materialize."
         )
     if metrics.recall < 0.50:
         notes.append(
-            "Low recall: many false negatives — the model misses actual upward moves."
+            "Low recall: many false negatives - the model misses actual upward moves."
         )
     if metrics.f1 >= 0.60:
         notes.append(
@@ -861,6 +1177,7 @@ def write_markdown_report(
     keras_price_metrics: dict[str, float | None],
     keras_direction_metrics: DirectionComparisonMetrics,
     quantum_direction_metrics: DirectionComparisonMetrics,
+    dummy_direction_metrics: DirectionComparisonMetrics,
     quantum_execution_mode: str,
     quantum_backend_name: str,
     quantum_shots: int,
@@ -884,16 +1201,24 @@ def write_markdown_report(
     # --- direction winner ---
     keras_f1 = keras_direction_metrics.f1
     quantum_f1 = quantum_direction_metrics.f1
-    direction_winner = "Keras LSTM" if keras_f1 >= quantum_f1 else "Quantum VQC"
-    direction_delta = abs(keras_f1 - quantum_f1)
+    dummy_f1 = dummy_direction_metrics.f1
+    directional_scores = {
+        "Keras LSTM": keras_f1,
+        "Quantum VQC": quantum_f1,
+        "Always Up baseline": dummy_f1,
+    }
+    direction_winner = max(directional_scores, key=directional_scores.get)
+    direction_delta = max(directional_scores.values()) - min(directional_scores.values())
 
     # --- confusion blocks ---
     keras_confusion = _confusion_block(keras_direction_metrics.confusion_matrix)
     quantum_confusion = _confusion_block(quantum_direction_metrics.confusion_matrix)
+    dummy_confusion = _confusion_block(dummy_direction_metrics.confusion_matrix)
 
     # --- shorthand aliases ---
     k = keras_direction_metrics
     q = quantum_direction_metrics
+    d = dummy_direction_metrics
     quantum_methodology_section = _build_quantum_methodology_section(
         execution_mode=quantum_execution_mode,
         backend_name=quantum_backend_name,
@@ -909,11 +1234,11 @@ def write_markdown_report(
         quantum_seconds=quantum_seconds,
     )
 
-    report = f"""# Model Comparison Report — `{symbol}`
+    report = f"""# Model Comparison Report - `{symbol}`
 
 > **Extraction date:** `{extraction_date.isoformat()}`  
 > **Generated at (UTC):** `{generated_at_utc}`  
-> **Evaluated samples — Keras:** {k.sample_count} | **Quantum:** {q.sample_count}
+> **Evaluated samples - Keras:** {k.sample_count} | **Quantum:** {q.sample_count}
 
 ---
 
@@ -921,14 +1246,15 @@ def write_markdown_report(
 
 | | Keras LSTM | Quantum VQC |
 |---|:---:|:---:|
-| Primary task | Price regression | Direction classification |
+| Primary task | Direction classification | Direction classification |
 | Directional F1 | `{k.f1:.4f}` | `{q.f1:.4f}` |
 | Directional accuracy | `{k.accuracy:.1%}` | `{q.accuracy:.1%}` |
 | Training time | `{keras_seconds:.1f} s` | `{quantum_seconds:.1f} s` |
-| Price MAE | `{keras_price_metrics["mae"]:.4f}` | — |
+| Always Up F1 | `{d.f1:.4f}` | baseline |
+| Price MAE | `{keras_price_metrics["mae"]:.4f}` | n/a |
 
-**Fastest model:** {faster_model} ({speedup:.1f}× faster)  
-**Best directional F1:** {direction_winner} (Δ F1 = {direction_delta:.4f})
+**Fastest model:** {faster_model} ({speedup:.1f}x faster)  
+**Best directional F1:** {direction_winner} (F1 range = {direction_delta:.4f})
 
 ---
 
@@ -940,14 +1266,14 @@ def write_markdown_report(
 | Quantum VQC | {quantum_seconds:.2f} | {quantum_seconds / (keras_seconds + quantum_seconds):.1%} |
 | **Total** | **{keras_seconds + quantum_seconds:.2f}** | 100% |
 
-> {faster_model} trained **{speedup:.1f}×** faster.  
+> {faster_model} trained **{speedup:.1f}x** faster.  
 > Quantum models are typically slower because they rely on circuit simulation or real quantum hardware access.
 
 ---
 
-## 2. Price metrics — Keras LSTM
+## 2. Price metrics - Keras LSTM
 
-The Keras model performs **direct price regression**; the Quantum VQC does not produce a price output.
+The separately trained Keras price model performs **direct price regression** for MAE/RMSE/MAPE context. The fair directional comparison uses a Keras LSTM classifier trained with `binary_crossentropy` and class weights.
 
 | Metric | Value | Interpretation |
 |---|---:|---|
@@ -960,33 +1286,39 @@ The Keras model performs **direct price regression**; the Quantum VQC does not p
 
 ---
 
-## 3. Directional metrics — side by side
+## 3. Directional metrics - side by side
 
-Both models are evaluated on their ability to predict whether the next close is higher or lower than the current one.
+Both learned models and the dummy baseline are evaluated on the same sampled test budget. The dummy baseline always predicts `Up`.
 
-| Metric | Keras LSTM | Quantum VQC | Δ (Keras − Quantum) |
+| Metric | Keras LSTM | Quantum VQC | Delta (Keras - Quantum) |
 |---|:---:|:---:|:---:|
 | Accuracy | `{k.accuracy:.4f}` | `{q.accuracy:.4f}` | `{k.accuracy - q.accuracy:+.4f}` |
 | Precision | `{k.precision:.4f}` | `{q.precision:.4f}` | `{k.precision - q.precision:+.4f}` |
 | Recall | `{k.recall:.4f}` | `{q.recall:.4f}` | `{k.recall - q.recall:+.4f}` |
 | F1 | `{k.f1:.4f}` | `{q.f1:.4f}` | `{k.f1 - q.f1:+.4f}` |
-| Samples | {k.sample_count} | {q.sample_count} | — |
+| Always Up F1 | `{d.f1:.4f}` | `{d.f1:.4f}` | baseline |
+| Samples | {k.sample_count} | {q.sample_count} | n/a |
 
 ### Quick F1 visualisation
 
 ```
 Keras LSTM   {_bar(k.f1)}  {k.f1:.2f}
 Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
+Always Up    {_bar(d.f1)}  {d.f1:.2f}
              0%                    100%
 ```
 
-### Interpretation — Keras LSTM
+### Interpretation - Keras LSTM
 
 {_interpret_direction(keras_direction_metrics, "Keras LSTM")}
 
-### Interpretation — Quantum VQC
+### Interpretation - Quantum VQC
 
 {_interpret_direction(quantum_direction_metrics, "Quantum VQC")}
+
+### Interpretation - Always Up baseline
+
+{_interpret_direction(dummy_direction_metrics, "Always Up baseline")}
 
 ---
 
@@ -999,6 +1331,10 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 ### 4.2 Quantum VQC
 
 {quantum_confusion}
+
+### 4.3 Always Up baseline
+
+{dummy_confusion}
 
 ---
 
@@ -1037,7 +1373,7 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 1. The 60-price window is compressed by PCA into a small number of latent factors.
 2. Those factors are encoded as **qubit rotation angles** inside a quantum circuit.
 3. A classical optimiser tunes the circuit to classify the next move as **up or down**.
-4. Output is a binary label directly — no absolute price estimate is produced.
+4. Output is a binary label directly - no absolute price estimate is produced.
 
 ---
 
@@ -1046,7 +1382,7 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 | # | Recommendation |
 |---|---|
 | 1 | Use **Keras LSTM** for absolute price forecasting and level-based entry/exit signal generation. |
-| 2 | Treat **Quantum VQC** as an experimental directional model — not a production replacement for Keras yet. |
+| 2 | Treat **Quantum VQC** as an experimental directional model - not a production replacement for Keras yet. |
 | 3 | The fairest apples-to-apples comparison between both approaches is the **directional metrics table** (Section 3). |
 | 4 | For IBM hardware experiments, report backend, queue/runtime metrics, shots, circuit depth, and repeated-run variance. |
 | 5 | If Keras MAPE exceeds 5%, consider adjusting the lookback window or adding volume-based features. |
@@ -1064,6 +1400,158 @@ Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 ---
 
 *Report generated automatically by the model comparison pipeline.*
+"""
+    destination.write_text(report, encoding="utf-8")
+
+
+def _average(values: list[float]) -> float:
+    return float(np.mean(values)) if values else 0.0
+
+
+def _best_learned_directional_model(asset: ComparisonAssetArtifact) -> str:
+    scores = {
+        "Keras LSTM": asset.keras_direction_metrics.f1,
+        "Quantum VQC": asset.quantum_direction_metrics.f1,
+    }
+    return max(scores, key=scores.get)
+
+
+def _baseline_status(asset: ComparisonAssetArtifact) -> str:
+    best_learned_f1 = max(
+        asset.keras_direction_metrics.f1,
+        asset.quantum_direction_metrics.f1,
+    )
+    if asset.dummy_direction_metrics.f1 > best_learned_f1:
+        return "Baseline higher"
+    return "Learned model higher"
+
+
+def _unified_metric_table(assets: list[ComparisonAssetArtifact]) -> str:
+    lines = [
+        "| Symbol | Keras F1 | Quantum F1 | Always Up F1 | Keras Acc | Quantum Acc | Always Up Acc | Keras MAPE | Best learned | Baseline check |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+    ]
+    for asset in assets:
+        keras = asset.keras_direction_metrics
+        quantum = asset.quantum_direction_metrics
+        dummy = asset.dummy_direction_metrics
+        mape = asset.keras_price_metrics.get("mape")
+        mape_text = f"{mape:.2f}%" if mape is not None else "n/a"
+        lines.append(
+            "| "
+            f"{asset.symbol} | "
+            f"{keras.f1:.4f} | "
+            f"{quantum.f1:.4f} | "
+            f"{dummy.f1:.4f} | "
+            f"{keras.accuracy:.4f} | "
+            f"{quantum.accuracy:.4f} | "
+            f"{dummy.accuracy:.4f} | "
+            f"{mape_text} | "
+            f"{_best_learned_directional_model(asset)} | "
+            f"{_baseline_status(asset)} |"
+        )
+    return "\n".join(lines)
+
+
+def _unified_artifact_table(assets: list[ComparisonAssetArtifact]) -> str:
+    lines = [
+        "| Symbol | Report | Dashboard | Confusion matrices |",
+        "|---|---|---|---|",
+    ]
+    for asset in assets:
+        lines.append(
+            "| "
+            f"{asset.symbol} | "
+            f"`{asset.report_local_path}` | "
+            f"`{asset.dashboard_local_path}` | "
+            f"`{asset.confusion_matrix_local_path}` |"
+        )
+    return "\n".join(lines)
+
+
+def write_unified_markdown_report(
+    *,
+    destination: Path,
+    extraction_date: date,
+    generated_at_utc: str,
+    run_token: str,
+    assets: list[ComparisonAssetArtifact],
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not assets:
+        destination.write_text(
+            "# Unified Model Comparison Report\n\nNo assets were generated for this run.\n",
+            encoding="utf-8",
+        )
+        return
+
+    keras_f1_values = [asset.keras_direction_metrics.f1 for asset in assets]
+    quantum_f1_values = [asset.quantum_direction_metrics.f1 for asset in assets]
+    dummy_f1_values = [asset.dummy_direction_metrics.f1 for asset in assets]
+    keras_time_values = [asset.keras_training_seconds for asset in assets]
+    quantum_time_values = [asset.quantum_training_seconds for asset in assets]
+    price_mape_values = [
+        float(asset.keras_price_metrics["mape"])
+        for asset in assets
+        if asset.keras_price_metrics.get("mape") is not None
+    ]
+    learned_winner_counts: dict[str, int] = {}
+    baseline_higher_count = 0
+    for asset in assets:
+        winner = _best_learned_directional_model(asset)
+        learned_winner_counts[winner] = learned_winner_counts.get(winner, 0) + 1
+        if _baseline_status(asset) == "Baseline higher":
+            baseline_higher_count += 1
+    learned_winner_summary = ", ".join(
+        f"{model}: {count}" for model, count in sorted(learned_winner_counts.items())
+    )
+
+    report = f"""# Unified Model Comparison Report
+
+> **Extraction date:** `{extraction_date.isoformat()}`
+> **Generated at (UTC):** `{generated_at_utc}`
+> **Run token:** `{run_token}`
+> **Symbols:** {", ".join(asset.symbol for asset in assets)}
+
+---
+
+## Executive summary
+
+| Metric | Keras LSTM | Quantum VQC | Always Up |
+|---|---:|---:|---:|
+| Mean directional F1 | `{_average(keras_f1_values):.4f}` | `{_average(quantum_f1_values):.4f}` | `{_average(dummy_f1_values):.4f}` |
+| Mean training time | `{_average(keras_time_values):.2f} s` | `{_average(quantum_time_values):.2f} s` | n/a |
+| Mean Keras price MAPE | `{_average(price_mape_values):.2f}%` | n/a | n/a |
+
+**Best learned-model F1 counts:** {learned_winner_summary}
+**Symbols where Always Up beats both learned models by F1:** {baseline_higher_count}/{len(assets)}
+
+This unified report is generated from the per-symbol reports and artifacts produced in the same comparison run. It should be used as the run-level view; the per-symbol reports remain the source for detailed confusion matrices, charts, and methodology notes.
+
+---
+
+## Per-symbol directional metrics
+
+{_unified_metric_table(assets)}
+
+---
+
+## Methodology guardrails
+
+- Keras directional metrics come from the binary LSTM classifier trained with `binary_crossentropy` and balanced class weights.
+- Keras price metrics come from the separate price-regression model and are included only as price-forecast context.
+- Quantum VQC and Keras directional evaluation use the same sampled split limits for train, validation, and test.
+- `Always Up` is the honest dummy baseline; learned models should be interpreted cautiously when they do not beat it consistently.
+
+---
+
+## Per-symbol artifacts
+
+{_unified_artifact_table(assets)}
+
+---
+
+*Unified report generated automatically by the model comparison pipeline.*
 """
     destination.write_text(report, encoding="utf-8")
 
@@ -1133,9 +1621,9 @@ def main() -> int:
             keras_result = keras_service.train(keras_request)
         except TrainingInterruptedError as exc:
             raise SystemExit(str(exc)) from exc
-        keras_seconds = time.perf_counter() - keras_start
+        keras_price_seconds = time.perf_counter() - keras_start
         keras_asset = keras_result.assets[0]
-        print(f"  Keras finished in {keras_seconds:.1f}s")
+        print(f"  Keras price model finished in {keras_price_seconds:.1f}s")
 
         # --- Quantum ---
         quantum_request = QuantumTrainingRequest(
@@ -1178,7 +1666,51 @@ def main() -> int:
             lookback=args.lookback,
             target_column=args.target_column,
         )
-        keras_direction_metrics, keras_price_frame = build_keras_direction_evaluation(
+        chart_root = (
+            Path("comparison_runs")
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"generated_at={run_token}"
+            / f"symbol={symbol}"
+        )
+        direction_dataset = build_directional_lstm_dataset(
+            frame=refined_frame,
+            scaler_metadata=scaler_metadata,
+            target_column=args.target_column,
+            lookback=args.lookback,
+            normalization=args.keras_direction_normalization,
+            max_train_samples=args.quantum_max_train_samples,
+            max_validation_samples=args.quantum_max_validation_samples,
+            max_test_samples=args.quantum_max_test_samples,
+            seed=args.seed,
+        )
+        direction_model_relative_path = (
+            chart_root / f"{args.keras_direction_model_name_prefix}_{symbol.lower()}.keras"
+        )
+        direction_history_relative_path = (
+            chart_root / f"{args.keras_direction_model_name_prefix}_{symbol.lower()}_history.json"
+        )
+        direction_model_path = local_store.prepare_path(direction_model_relative_path)
+        direction_history_path = local_store.prepare_path(direction_history_relative_path)
+
+        keras_direction_start = time.perf_counter()
+        keras_direction_metrics, _ = train_directional_lstm_classifier(
+            dataset=direction_dataset,
+            destination_model_path=direction_model_path,
+            destination_history_path=direction_history_path,
+            epochs=args.keras_epochs,
+            batch_size=args.keras_batch_size,
+            patience=args.keras_patience,
+            learning_rate=args.keras_learning_rate,
+            seed=args.seed,
+            verbose=args.keras_verbose,
+        )
+        keras_seconds = time.perf_counter() - keras_direction_start
+        dummy_direction_metrics = build_always_up_baseline_metrics(
+            y_test=direction_dataset["y_test"],
+        )
+        print(f"  Keras direction classifier finished in {keras_seconds:.1f}s")
+
+        _, keras_price_frame = build_keras_direction_evaluation(
             model_path=Path(keras_asset.model_local_path),
             frame=refined_frame,
             scaler_metadata=scaler_metadata,
@@ -1196,12 +1728,6 @@ def main() -> int:
         )
 
         # --- Artifacts ---
-        chart_root = (
-            Path("comparison_runs")
-            / f"extraction_date={extraction_date.isoformat()}"
-            / f"generated_at={run_token}"
-            / f"symbol={symbol}"
-        )
         dashboard_path = local_store.prepare_path(chart_root / "comparison_dashboard.png")
         confusion_chart_path = local_store.prepare_path(
             chart_root / "comparison_confusion_matrices.png"
@@ -1222,6 +1748,7 @@ def main() -> int:
             keras_price_metrics=keras_price_metrics,
             keras_direction_metrics=keras_direction_metrics,
             quantum_direction_metrics=quantum_direction_metrics,
+            dummy_direction_metrics=dummy_direction_metrics,
             price_comparison_frame=keras_price_frame,
             sample_plot_points=args.sample_plot_points,
         )
@@ -1230,6 +1757,7 @@ def main() -> int:
             symbol=symbol,
             keras_metrics=keras_direction_metrics,
             quantum_metrics=quantum_direction_metrics,
+            dummy_metrics=dummy_direction_metrics,
         )
         write_markdown_report(
             destination=report_path,
@@ -1241,6 +1769,7 @@ def main() -> int:
             keras_price_metrics=keras_price_metrics,
             keras_direction_metrics=keras_direction_metrics,
             quantum_direction_metrics=quantum_direction_metrics,
+            dummy_direction_metrics=dummy_direction_metrics,
             quantum_execution_mode=quantum_asset.execution_mode,
             quantum_backend_name=quantum_asset.backend_name,
             quantum_shots=args.quantum_shots,
@@ -1255,20 +1784,61 @@ def main() -> int:
             dashboard_path=dashboard_path,
             confusion_chart_path=confusion_chart_path,
         )
+        dashboard_s3_uri = upload_comparison_artifact(
+            s3_store=model_s3_store,
+            local_path=dashboard_path,
+            relative_path=chart_root / "comparison_dashboard.png",
+        )
+        confusion_chart_s3_uri = upload_comparison_artifact(
+            s3_store=model_s3_store,
+            local_path=confusion_chart_path,
+            relative_path=chart_root / "comparison_confusion_matrices.png",
+        )
+        report_s3_uri = upload_comparison_artifact(
+            s3_store=model_s3_store,
+            local_path=report_path,
+            relative_path=chart_root / "comparison_report.md",
+        )
+        direction_model_s3_uri = upload_comparison_artifact(
+            s3_store=model_s3_store,
+            local_path=direction_model_path,
+            relative_path=direction_model_relative_path,
+        )
+        direction_history_s3_uri = upload_comparison_artifact(
+            s3_store=model_s3_store,
+            local_path=direction_history_path,
+            relative_path=direction_history_relative_path,
+        )
 
         assets.append(
             ComparisonAssetArtifact(
                 symbol=symbol,
                 keras_training_seconds=keras_seconds,
+                keras_price_training_seconds=keras_price_seconds,
                 quantum_training_seconds=quantum_seconds,
                 keras_model_local_path=keras_asset.model_local_path,
+                keras_model_s3_uri=keras_asset.model_s3_uri,
+                keras_history_s3_uri=keras_asset.history_s3_uri,
+                keras_manifest_s3_uri=keras_result.manifest_s3_uri,
+                keras_direction_model_local_path=str(direction_model_path),
+                keras_direction_model_s3_uri=direction_model_s3_uri,
+                keras_direction_history_local_path=str(direction_history_path),
+                keras_direction_history_s3_uri=direction_history_s3_uri,
                 quantum_model_local_path=quantum_asset.model_local_path,
+                quantum_model_s3_uri=quantum_asset.model_s3_uri,
+                quantum_preprocessor_s3_uri=quantum_asset.preprocessor_s3_uri,
+                quantum_training_details_s3_uri=quantum_asset.training_details_s3_uri,
+                quantum_manifest_s3_uri=quantum_result.manifest_s3_uri,
                 dashboard_local_path=str(dashboard_path),
+                dashboard_s3_uri=dashboard_s3_uri,
                 confusion_matrix_local_path=str(confusion_chart_path),
+                confusion_matrix_s3_uri=confusion_chart_s3_uri,
                 report_local_path=str(report_path),
+                report_s3_uri=report_s3_uri,
                 keras_price_metrics=keras_price_metrics,
                 keras_direction_metrics=keras_direction_metrics,
                 quantum_direction_metrics=quantum_direction_metrics,
+                dummy_direction_metrics=dummy_direction_metrics,
                 quantum_execution_mode=quantum_asset.execution_mode,
                 quantum_backend_name=quantum_asset.backend_name,
                 quantum_shots=args.quantum_shots,
@@ -1285,9 +1855,49 @@ def main() -> int:
 
         print(f"  report    : {report_path}")
         print(f"  dashboard : {dashboard_path}")
+        if report_s3_uri:
+            print(f"  report S3 : {report_s3_uri}")
+        if dashboard_s3_uri:
+            print(f"  dashboard S3: {dashboard_s3_uri}")
+        if confusion_chart_s3_uri:
+            print(f"  confusion S3: {confusion_chart_s3_uri}")
+        if direction_model_s3_uri:
+            print(f"  Keras direction model S3: {direction_model_s3_uri}")
 
+    run_root = (
+        Path("comparison_runs")
+        / f"extraction_date={extraction_date.isoformat()}"
+        / f"generated_at={run_token}"
+    )
+    unified_report_relative_path = run_root / "unified_comparison_report.md"
+    unified_report_path = local_store.prepare_path(unified_report_relative_path)
+    write_unified_markdown_report(
+        destination=unified_report_path,
+        extraction_date=extraction_date,
+        generated_at_utc=generated_at_utc,
+        run_token=run_token,
+        assets=assets,
+    )
+    unified_report_s3_uri = upload_comparison_artifact(
+        s3_store=model_s3_store,
+        local_path=unified_report_path,
+        relative_path=unified_report_relative_path,
+    )
+
+    manifest_relative_path = (
+        run_root
+        / "comparison_manifest.json"
+    )
+    manifest_expected_s3_uri = (
+        model_s3_store.build_uri(model_s3_store.build_key(manifest_relative_path))
+        if model_s3_store is not None
+        else None
+    )
     manifest_payload = {
         "generated_at_utc": generated_at_utc,
+        "manifest_s3_uri": manifest_expected_s3_uri,
+        "unified_report_local_path": str(unified_report_path),
+        "unified_report_s3_uri": unified_report_s3_uri,
         "request": {
             "symbols": [s.upper() for s in args.symbols],
             "extraction_date": extraction_date.isoformat(),
@@ -1296,6 +1906,8 @@ def main() -> int:
             "lookback": args.lookback,
             "keras_epochs": args.keras_epochs,
             "keras_batch_size": args.keras_batch_size,
+            "keras_direction_model_name_prefix": args.keras_direction_model_name_prefix,
+            "keras_direction_normalization": args.keras_direction_normalization,
             "quantum_mode": args.quantum_mode,
             "quantum_backend": args.quantum_backend,
             "quantum_num_qubits": args.quantum_num_qubits,
@@ -1309,16 +1921,20 @@ def main() -> int:
         },
         "assets": [asdict(asset) for asset in assets],
     }
-    manifest_path = local_store.write_json(
-        manifest_payload,
-        Path("comparison_runs")
-        / f"extraction_date={extraction_date.isoformat()}"
-        / f"generated_at={run_token}"
-        / "comparison_manifest.json",
+    manifest_path = local_store.write_json(manifest_payload, manifest_relative_path)
+    manifest_s3_uri = upload_comparison_artifact(
+        s3_store=model_s3_store,
+        local_path=manifest_path,
+        relative_path=manifest_relative_path,
     )
 
     print(f"\nComparison run completed.")
+    print(f"Unified report local: {unified_report_path}")
+    if unified_report_s3_uri:
+        print(f"Unified report S3:    {unified_report_s3_uri}")
     print(f"Manifest local: {manifest_path}")
+    if manifest_s3_uri:
+        print(f"Manifest S3:    {manifest_s3_uri}")
     return 0
 
 
