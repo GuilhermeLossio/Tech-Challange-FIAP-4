@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src.application.services.forecast_guardrails import apply_standard_forecast_guardrail
+from src.application.services.model_promotion_registry import ModelPromotionRegistry
 
 try:
     import tensorflow as tf
@@ -119,6 +120,9 @@ class GenerateForecastBatchUseCase:
         self._models_root_dir = models_root_dir
         self._local_store = local_store
         self._s3_store = s3_store
+        self._promotion_registry = ModelPromotionRegistry(
+            models_root_dir=self._models_root_dir,
+        )
 
     def generate(self, request: ForecastBatchRequest) -> ForecastBatchResult:
         if request.include_normal:
@@ -417,6 +421,17 @@ class GenerateForecastBatchUseCase:
         model_name_prefix: str,
     ) -> dict[str, str | None]:
         expected_model_name = f"{model_name_prefix}_{symbol.lower()}.keras"
+        promoted_metadata = self._resolve_promoted_keras_model_metadata(
+            symbol=symbol,
+            requested_extraction_date=extraction_date,
+            source=source,
+            target_column=target_column,
+            lookback=lookback,
+            expected_model_name=expected_model_name,
+        )
+        if promoted_metadata is not None:
+            return promoted_metadata
+
         manifests_root = (
             self._models_root_dir
             / "manifests"
@@ -485,6 +500,60 @@ class GenerateForecastBatchUseCase:
             f"Could not find a trained Keras model for symbol {symbol!r}. "
             f"Expected manifest under {manifests_root} or fallback model {fallback_path}."
         )
+
+    def _resolve_promoted_keras_model_metadata(
+        self,
+        *,
+        symbol: str,
+        requested_extraction_date: date,
+        source: str,
+        target_column: str,
+        lookback: int,
+        expected_model_name: str,
+    ) -> dict[str, str | None] | None:
+        if not self._promotion_registry.exists():
+            return None
+
+        for promotion in self._promotion_registry.list_candidates(
+            symbol=symbol,
+            requested_extraction_date=requested_extraction_date,
+        ):
+            manifest_path = promotion.manifest_local_path
+            model_path = promotion.model_local_path
+            if not manifest_path.exists() or not model_path.exists():
+                continue
+            if model_path.name.lower() != expected_model_name.lower():
+                continue
+
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            request_payload = payload.get("request", {})
+            if (
+                request_payload.get("source") != source
+                or request_payload.get("target_column") != target_column
+                or int(request_payload.get("lookback", lookback)) != lookback
+            ):
+                continue
+
+            asset_payload = next(
+                (
+                    asset
+                    for asset in payload.get("assets", [])
+                    if str(asset.get("symbol", "")).upper() == symbol.upper()
+                    and Path(str(asset.get("model_local_path", ""))).name.lower()
+                    == expected_model_name.lower()
+                ),
+                None,
+            )
+            if asset_payload is None:
+                continue
+
+            return {
+                "model_local_path": str(model_path),
+                "training_manifest_local_path": str(manifest_path),
+                "training_generated_at_utc": str(payload.get("generated_at_utc")),
+            }
+
+        return None
 
     def _resolve_quantum_model_metadata(
         self,

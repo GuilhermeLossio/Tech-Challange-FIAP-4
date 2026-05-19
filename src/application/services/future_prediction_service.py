@@ -83,6 +83,31 @@ class FuturePredictionService:
                 continue
         return tuple(sorted(set(candidates)))
 
+    def list_available_horizon_days(
+        self,
+        *,
+        symbol: str,
+        lookback: int | None = None,
+    ) -> tuple[int, ...]:
+        symbol_root = (
+            self._processed_root_dir
+            / "future_predict"
+            / f"source={self._source}"
+            / f"symbol={symbol.strip().upper()}"
+            / f"lookback={lookback or self._lookback}"
+        )
+        if not symbol_root.exists():
+            return tuple()
+
+        horizons: list[int] = []
+        for partition in symbol_root.glob("horizon_days=*"):
+            token = partition.name.split("=", 1)[-1]
+            try:
+                horizons.append(int(token))
+            except ValueError:
+                continue
+        return tuple(sorted(set(horizons)))
+
     def resolve_effective_extraction_date(
         self,
         *,

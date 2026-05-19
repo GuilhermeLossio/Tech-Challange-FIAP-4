@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import sys
 
+import pandas as pd
+
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 
@@ -72,6 +74,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="Forecast horizon in future business days.",
+    )
+    parser.add_argument(
+        "--forecast-end-date",
+        default=None,
+        help=(
+            "Forecast through this business date in YYYY-MM-DD format. "
+            "When provided, it overrides --horizon-days by deriving the number "
+            "of future business days from the last observed raw date."
+        ),
     )
     parser.add_argument(
         "--model-name-prefix",
@@ -187,6 +198,78 @@ def build_processed_s3_store(
     )
 
 
+def detect_last_observed_date(
+    *,
+    raw_root_dir: Path,
+    source: str,
+    symbol: str,
+    extraction_date: date,
+) -> date:
+    raw_path = (
+        raw_root_dir
+        / "market_data"
+        / f"source={source}"
+        / f"symbol={symbol.upper()}"
+        / f"extraction_date={extraction_date.isoformat()}"
+        / "ohlcv.csv"
+    )
+    if not raw_path.exists():
+        raise SystemExit(f"Raw input not found for symbol {symbol!r}: {raw_path}")
+
+    frame = pd.read_csv(raw_path, usecols=["date"], parse_dates=["date"])
+    if frame.empty:
+        raise SystemExit(f"Raw input for symbol {symbol!r} is empty: {raw_path}")
+    return pd.Timestamp(frame["date"].max()).date()
+
+
+def resolve_horizon_days(
+    *,
+    requested_horizon_days: int,
+    forecast_end_date: date | None,
+    raw_root_dir: Path,
+    source: str,
+    symbols: tuple[str, ...],
+    extraction_date: date,
+) -> int:
+    if forecast_end_date is None:
+        return requested_horizon_days
+
+    last_observed_by_symbol = {
+        symbol: detect_last_observed_date(
+            raw_root_dir=raw_root_dir,
+            source=source,
+            symbol=symbol,
+            extraction_date=extraction_date,
+        )
+        for symbol in symbols
+    }
+    unique_last_observed_dates = set(last_observed_by_symbol.values())
+    if len(unique_last_observed_dates) != 1:
+        details = ", ".join(
+            f"{symbol}={last_date.isoformat()}"
+            for symbol, last_date in sorted(last_observed_by_symbol.items())
+        )
+        raise SystemExit(
+            "Cannot derive one shared --horizon-days because symbols have different "
+            f"last observed dates: {details}."
+        )
+
+    last_observed_date = next(iter(unique_last_observed_dates))
+    first_forecast_date = pd.Timestamp(last_observed_date) + pd.offsets.BDay(1)
+    forecast_dates = pd.bdate_range(
+        first_forecast_date,
+        pd.Timestamp(forecast_end_date),
+    )
+    if len(forecast_dates) == 0:
+        raise SystemExit(
+            "--forecast-end-date must be after the last observed business date. "
+            f"last_observed_date={last_observed_date.isoformat()} "
+            f"forecast_end_date={forecast_end_date.isoformat()}"
+        )
+
+    return int(len(forecast_dates))
+
+
 def main() -> int:
     args = parse_args()
     settings = ForecastPipelineSettings.from_env()
@@ -196,6 +279,19 @@ def main() -> int:
         parse_iso_date(args.extraction_date)
         if args.extraction_date
         else detect_latest_extraction_date(settings.local_processed_dir)
+    )
+    symbols = tuple(symbol.upper() for symbol in args.symbols)
+    horizon_days = resolve_horizon_days(
+        requested_horizon_days=args.horizon_days,
+        forecast_end_date=(
+            parse_iso_date(args.forecast_end_date)
+            if args.forecast_end_date
+            else None
+        ),
+        raw_root_dir=settings.local_raw_dir,
+        source=args.source,
+        symbols=symbols,
+        extraction_date=extraction_date,
     )
 
     use_case = GenerateForecastBatchUseCase(
@@ -207,18 +303,24 @@ def main() -> int:
     )
 
     request = ForecastBatchRequest(
-        symbols=tuple(symbol.upper() for symbol in args.symbols),
+        symbols=symbols,
         extraction_date=extraction_date,
         source=args.source,
         target_column=args.target_column,
         lookback=args.lookback,
-        horizon_days=args.horizon_days,
+        horizon_days=horizon_days,
         model_name_prefix=args.model_name_prefix,
         quantum_model_name_prefix=args.quantum_model_name_prefix,
         include_normal=not args.skip_normal,
         include_quantum=not args.skip_quant,
         upload_to_s3=upload_to_s3,
     )
+
+    if args.forecast_end_date:
+        print(
+            "Forecast end date requested: "
+            f"{args.forecast_end_date}; derived horizon_days={horizon_days}."
+        )
 
     try:
         result = use_case.generate(request)

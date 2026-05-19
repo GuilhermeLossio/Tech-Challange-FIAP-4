@@ -311,6 +311,14 @@ Output example:
 data/processed/future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
 ```
 
+To forecast through a fixed calendar date, let the script derive the business-day horizon:
+
+```bash
+python scripts/generate_forecast.py --forecast-end-date 2026-12-31
+```
+
+For extraction date `2026-04-26`, this produces `horizon_days=179` from the last observed business date (`2026-04-24`) through `2026-12-31`, publishes the parquet files to S3 when S3 is configured, and repairs the Athena `future_predict` table unless `--skip-athena` is used.
+
 ### 6. Compare classical and quantum paths
 
 Safe simulator run:

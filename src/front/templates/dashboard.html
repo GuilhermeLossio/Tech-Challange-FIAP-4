@@ -7,6 +7,24 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body>
+    <div class="sd-app">
+      <div class="sd-topbar">
+        <div class="sd-brand">
+          <div class="sd-brand-icon">SD</div>
+          <div>
+            <div class="sd-brand-name">Signal Deck</div>
+            <div class="sd-brand-sub">Semiconductor Forecast</div>
+          </div>
+        </div>
+        <div class="sd-chips">
+          <div class="sd-chip">UTC {{ today_utc }}</div>
+          <div class="sd-chip">Horizon {{ horizon_days }}</div>
+          <div class="sd-chip">Extraction {{ selected_extraction_date or 'auto' }}</div>
+          <div class="sd-chip sd-chip-accent">Batch Ready</div>
+          <div class="sd-badge-locked">Read Only</div>
+        </div>
+      </div>
+
     <div class="shell">
       <aside class="rail">
         <div class="brand">
@@ -72,7 +90,10 @@
             <input type="number" min="1" name="limit" value="{{ row_limit }}">
           </label>
 
-          <button type="submit" class="primary-action">Refresh View</button>
+          <div class="filter-actions">
+            <button type="submit" class="primary-action">Refresh View</button>
+            <a class="secondary-action" href="{{ url_for('dashboard') }}">Reset</a>
+          </div>
         </form>
 
         <div class="read-only-note">
@@ -90,6 +111,8 @@
           </div>
           <div class="hero-meta">
             <div class="meta-chip">Today UTC {{ today_utc }}</div>
+            <div class="meta-chip">Extraction {{ selected_extraction_date or 'auto' }}</div>
+            <div class="meta-chip">Horizon {{ horizon_days }}</div>
             <div class="meta-chip meta-chip-accent">Quantum online: disabled</div>
           </div>
         </header>
@@ -132,10 +155,10 @@
                   <th>Symbol</th>
                   <th>Base close</th>
                   <th>Standard D+1</th>
-                  <th>Std Δ</th>
+                  <th>Std Delta</th>
                   <th>Std horizon</th>
                   <th>Quantum D+1</th>
-                  <th>Quant Δ</th>
+                  <th>Quant Delta</th>
                   <th>Guardrail</th>
                   <th>Availability</th>
                   <th>Open</th>
@@ -145,42 +168,42 @@
                 {% for row in company_snapshot_rows %}
                 <tr class="{% if row.is_selected %}row-selected{% endif %}">
                   <td><strong>{{ row.symbol }}</strong></td>
-                  <td>
+                  <td class="num">
                     {% if row.base_close is not none %}
                     ${{ '%.2f'|format(row.base_close) }}
                     {% else %}
                     --
                     {% endif %}
                   </td>
-                  <td>
+                  <td class="num">
                     {% if row.standard_day_one is not none %}
                     ${{ '%.2f'|format(row.standard_day_one) }}
                     {% else %}
                     --
                     {% endif %}
                   </td>
-                  <td>
+                  <td class="num {% if row.standard_day_one_delta_pct is not none and row.standard_day_one_delta_pct >= 0 %}positive-text{% elif row.standard_day_one_delta_pct is not none %}negative-text{% endif %}">
                     {% if row.standard_day_one_delta_pct is not none %}
                     {{ '+' if row.standard_day_one_delta_pct >= 0 else '' }}{{ '%.2f'|format(row.standard_day_one_delta_pct) }}%
                     {% else %}
                     --
                     {% endif %}
                   </td>
-                  <td>
+                  <td class="num">
                     {% if row.standard_horizon_end is not none %}
                     ${{ '%.2f'|format(row.standard_horizon_end) }}
                     {% else %}
                     --
                     {% endif %}
                   </td>
-                  <td>
+                  <td class="num">
                     {% if row.quantum_day_one is not none %}
                     ${{ '%.2f'|format(row.quantum_day_one) }}
                     {% else %}
                     --
                     {% endif %}
                   </td>
-                  <td>
+                  <td class="num {% if row.quantum_day_one_delta_pct is not none and row.quantum_day_one_delta_pct >= 0 %}positive-text{% elif row.quantum_day_one_delta_pct is not none %}negative-text{% endif %}">
                     {% if row.quantum_day_one_delta_pct is not none %}
                     {{ '+' if row.quantum_day_one_delta_pct >= 0 else '' }}{{ '%.2f'|format(row.quantum_day_one_delta_pct) }}%
                     {% else %}
@@ -194,7 +217,7 @@
                     no
                     {% endif %}
                   </td>
-                  <td>{{ row.availability }}</td>
+                  <td><span class="status-pill">{{ row.availability }}</span></td>
                   <td>
                     <a
                       class="table-link"
@@ -513,6 +536,7 @@
           </article>
         </section>
       </main>
+    </div>
     </div>
   </body>
 </html>

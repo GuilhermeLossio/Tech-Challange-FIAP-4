@@ -68,7 +68,12 @@ def create_app() -> Flask:
         selected_forecast_date_to = request.args.get("forecast_date_to") or None
 
         lookback = _parse_positive_int(request.args.get("lookback"), default=60)
-        horizon_days = _parse_positive_int(request.args.get("horizon_days"), default=30)
+        horizon_days = _resolve_front_horizon_days(
+            raw_value=request.args.get("horizon_days"),
+            future_prediction_service=future_prediction_service,
+            symbol=symbol,
+            lookback=lookback,
+        )
         row_limit = _parse_positive_int(request.args.get("limit"), default=12)
 
         future_result = None
@@ -255,6 +260,25 @@ def _parse_positive_int(raw_value: str | None, *, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _resolve_front_horizon_days(
+    *,
+    raw_value: str | None,
+    future_prediction_service: FuturePredictionService,
+    symbol: str,
+    lookback: int,
+) -> int:
+    if raw_value is not None and raw_value.strip():
+        return _parse_positive_int(raw_value, default=30)
+
+    available_horizons = future_prediction_service.list_available_horizon_days(
+        symbol=symbol,
+        lookback=lookback,
+    )
+    if available_horizons:
+        return available_horizons[-1]
+    return 30
 
 
 def _build_market_context_chart(
