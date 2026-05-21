@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 import re
 import shutil
 import sys
+import warnings
 from urllib.parse import parse_qsl
 
 
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*tf.function retracing.*")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
