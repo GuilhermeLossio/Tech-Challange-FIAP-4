@@ -1,0 +1,1045 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signal Deck</title>
+    <link rel="stylesheet" href="../static/app.css">
+  </head>
+  <body>
+    <div class="sd-app">
+      <div class="sd-topbar">
+        <div class="sd-brand">
+          <div class="sd-brand-icon">SD</div>
+          <div>
+            <div class="sd-brand-name">Signal Deck</div>
+            <div class="sd-brand-sub">Semiconductor Forecast</div>
+          </div>
+        </div>
+        <div class="sd-chips">
+          <div class="sd-chip">UTC 2026-05-21</div>
+          <div class="sd-chip">Horizon 30</div>
+          <div class="sd-chip">Extraction 2026-04-22</div>
+          <div class="sd-chip sd-chip-accent">Batch Ready</div>
+          <div class="sd-badge-locked">Read Only</div>
+        </div>
+      </div>
+
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">Signal Deck</div>
+          <div class="brand-sub">Semiconductor Forecast Client View</div>
+        </div>
+
+        
+        <form class="filter-panel" method="get" action="../index.html">
+          <div class="filter-title">Read-Only Filters</div>
+
+          <label class="field">
+            <span>Symbol</span>
+            <select name="symbol">
+              
+              <option value="AMD" >AMD</option>
+              
+              <option value="ASML" >ASML</option>
+              
+              <option value="NVDA" >NVDA</option>
+              
+              <option value="QCOM" >QCOM</option>
+              
+              <option value="TSM" selected>TSM</option>
+              
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Extraction Date</span>
+            <input type="date" name="extraction_date" value="2026-04-22">
+          </label>
+
+          <label class="field">
+            <span>Reference Date</span>
+            <input type="date" name="reference_date" value="2025-12-31">
+          </label>
+
+          <label class="field">
+            <span>Predict Type</span>
+            <select name="predict_type">
+              <option value="all" selected>All</option>
+              <option value="normal" >Normal</option>
+              <option value="quant" >Quant</option>
+            </select>
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Forecast From</span>
+              <input type="date" name="forecast_date_from" value="">
+            </label>
+            <label class="field">
+              <span>Forecast To</span>
+              <input type="date" name="forecast_date_to" value="">
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Lookback</span>
+              <input type="number" min="1" name="lookback" value="60">
+            </label>
+            <label class="field">
+              <span>Horizon</span>
+              <input type="number" min="1" name="horizon_days" value="30">
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Rows</span>
+            <input type="number" min="1" name="limit" value="30">
+          </label>
+
+          <div class="filter-actions">
+            <button type="submit" class="primary-action">Refresh View</button>
+            <a class="secondary-action" href="../index.html">Reset</a>
+          </div>
+        </form>
+        
+
+        <div class="read-only-note">
+          <div class="pill pill-locked">Read Only</div>
+          
+          <p>Standard users can filter and inspect predictions and training data, but this interface exposes no mutation or upload action.</p>
+          
+        </div>
+      </aside>
+
+      <main class="canvas">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Client View</div>
+            <h1>TSM Forecast Console</h1>
+            <p>Precomputed forecasts, training signals, and online classical inference in a read-only surface.</p>
+          </div>
+          <div class="hero-meta">
+            <div class="meta-chip">Today UTC 2026-05-21</div>
+            <div class="meta-chip">Extraction 2026-04-22</div>
+            <div class="meta-chip">Horizon 30</div>
+            <div class="meta-chip meta-chip-accent">Quantum online: disabled</div>
+          </div>
+        </header>
+
+        
+
+        <section class="metrics-grid">
+          
+          <article class="metric-card metric-card-primary">
+            <div class="metric-label">Last Observed Close</div>
+            <div class="metric-value">$303.89</div>
+            <div class="metric-sub">2025-12-31</div>
+          </article>
+          
+          <article class="metric-card ">
+            <div class="metric-label">Six-Month History</div>
+            <div class="metric-value">126 sessions</div>
+            <div class="metric-sub">2025-07-03 to 2025-12-31</div>
+          </article>
+          
+          <article class="metric-card ">
+            <div class="metric-label">Standard D+1</div>
+            <div class="metric-value">$290.02</div>
+            <div class="metric-sub">Keras batch/live baseline</div>
+          </article>
+          
+          <article class="metric-card ">
+            <div class="metric-label">Quantum D+1</div>
+            <div class="metric-value">$299.34</div>
+            <div class="metric-sub">Offline VQC batch path</div>
+          </article>
+          
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Company Forecast Snapshot</div>
+              <div class="panel-subtitle">Side-by-side D+1 and standard horizon view for every supported company.</div>
+            </div>
+            <div class="panel-tags">
+              <span class="tag">5 companies</span>
+              <span class="tag tag-teal">selected: TSM</span>
+            </div>
+          </div>
+
+          
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Base close</th>
+                  <th>Standard D+1</th>
+                  <th>Std Delta</th>
+                  <th>Std horizon</th>
+                  <th>Quantum D+1</th>
+                  <th>Quant Delta</th>
+                  <th>Guardrail</th>
+                  <th>Availability</th>
+                  <th>Open</th>
+                </tr>
+              </thead>
+              <tbody>
+                
+                <tr class="row-selected">
+                  <td><strong>TSM</strong></td>
+                  <td class="num">
+                    
+                    $303.89
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $290.02
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -4.57%
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $91.50
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $299.34
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -1.50%
+                    
+                  </td>
+                  <td>
+                    
+                    yes (4.57%)
+                    
+                  </td>
+                  <td><span class="status-pill">standard + quantum</span></td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="../tsm/index.html"
+                    >view</a>
+                  </td>
+                </tr>
+                
+                <tr class="">
+                  <td><strong>AMD</strong></td>
+                  <td class="num">
+                    
+                    $214.16
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $205.70
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -3.95%
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $124.50
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $211.01
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -1.47%
+                    
+                  </td>
+                  <td>
+                    
+                    yes (3.95%)
+                    
+                  </td>
+                  <td><span class="status-pill">standard + quantum</span></td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="../amd/index.html"
+                    >view</a>
+                  </td>
+                </tr>
+                
+                <tr class="">
+                  <td><strong>ASML</strong></td>
+                  <td class="num">
+                    
+                    $1069.86
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $1024.59
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -4.23%
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $905.80
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $1056.40
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -1.26%
+                    
+                  </td>
+                  <td>
+                    
+                    yes (4.23%)
+                    
+                  </td>
+                  <td><span class="status-pill">standard + quantum</span></td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="../asml/index.html"
+                    >view</a>
+                  </td>
+                </tr>
+                
+                <tr class="">
+                  <td><strong>NVDA</strong></td>
+                  <td class="num">
+                    
+                    $186.50
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $178.03
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -4.54%
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $117.00
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $183.22
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -1.76%
+                    
+                  </td>
+                  <td>
+                    
+                    yes (4.54%)
+                    
+                  </td>
+                  <td><span class="status-pill">standard + quantum</span></td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="../nvda/index.html"
+                    >view</a>
+                  </td>
+                </tr>
+                
+                <tr class="">
+                  <td><strong>QCOM</strong></td>
+                  <td class="num">
+                    
+                    $171.05
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $168.07
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -1.74%
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $157.86
+                    
+                  </td>
+                  <td class="num">
+                    
+                    $169.82
+                    
+                  </td>
+                  <td class="num negative-text">
+                    
+                    -0.72%
+                    
+                  </td>
+                  <td>
+                    
+                    no
+                    
+                  </td>
+                  <td><span class="status-pill">standard + quantum</span></td>
+                  <td>
+                    <a
+                      class="table-link"
+                      href="../qcom/index.html"
+                    >view</a>
+                  </td>
+                </tr>
+                
+              </tbody>
+            </table>
+          </div>
+          
+        </section>
+
+        <section class="panel panel-chart panel-chart-hero">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Six-Month Market Context</div>
+              <div class="panel-subtitle">
+                
+                Observed closes from 2025-07-03 to 2025-12-31, followed by standard and quantum forward paths.
+                
+              </div>
+            </div>
+            <div class="panel-tags">
+              <span class="tag">6 months</span>
+              <span class="tag tag-teal">normal vs quant</span>
+            </div>
+          </div>
+
+          
+          <svg class="forecast-chart forecast-chart-hero" viewBox="0 0 920.0 320.0" preserveAspectRatio="none" aria-label="Six-month market context chart">
+            
+            <line x1="0" x2="920.0" y1="30.0" y2="30.0" class="chart-guide"></line>
+            <text x="8" y="24.0" class="chart-label">$310.14</text>
+            
+            <line x1="0" x2="920.0" y1="160.0" y2="160.0" class="chart-guide"></line>
+            <text x="8" y="154.0" class="chart-label">$200.82</text>
+            
+            <line x1="0" x2="920.0" y1="290.0" y2="290.0" class="chart-guide"></line>
+            <text x="8" y="284.0" class="chart-label">$91.50</text>
+            
+            <line x1="723.5483870967743" x2="723.5483870967743" y1="0" y2="320.0" class="chart-boundary"></line>
+            <polyline points="30.00,119.59 35.55,126.29 41.10,127.85 46.65,123.11 52.19,125.59 57.74,124.82 63.29,126.88 68.84,117.04 74.39,116.31 79.94,106.75 85.48,112.93 91.03,114.78 96.58,119.83 102.13,113.02 107.68,111.51 113.23,106.75 118.77,110.14 124.32,111.83 129.87,109.95 135.42,111.48 140.97,119.10 146.52,114.60 152.06,122.36 157.61,123.67 163.16,110.29 168.71,111.23 174.26,110.92 179.81,108.31 185.35,111.70 190.90,112.22 196.45,114.74 202.00,111.73 207.55,122.09 213.10,126.97 218.65,128.48 224.19,121.74 229.74,118.65 235.29,114.93 240.84,114.25 246.39,115.47 251.94,124.27 257.48,127.22 263.03,123.65 268.58,119.10 274.13,109.35 279.68,104.86 285.23,100.42 290.77,89.10 296.32,90.92 301.87,90.42 307.42,87.98 312.97,87.18 318.52,86.31 324.06,79.35 329.61,83.83 335.16,74.61 340.71,62.62 346.26,65.00 351.81,69.81 357.35,73.74 362.90,73.89 368.45,66.69 374.00,55.77 379.55,56.20 385.10,51.35 390.65,39.20 396.19,49.16 401.74,36.68 407.29,42.20 412.84,65.06 418.39,38.62 423.94,46.89 429.48,36.46 435.03,42.25 440.58,47.91 446.13,44.79 451.68,48.59 457.23,55.28 462.77,53.08 468.32,48.05 473.87,44.14 479.42,40.24 484.97,36.01 490.52,38.23 496.06,41.55 501.61,36.28 507.16,49.13 512.71,49.62 518.26,54.85 523.81,58.11 529.35,47.68 534.90,52.56 540.45,53.21 546.00,63.23 551.55,60.11 557.10,63.45 562.65,68.33 568.19,63.02 573.74,68.81 579.29,71.72 584.84,60.32 590.39,60.28 595.94,54.00 601.48,52.15 607.03,56.71 612.58,51.46 618.13,47.47 623.68,50.47 629.23,48.34 634.77,39.83 640.32,38.00 645.87,30.00 651.42,36.29 656.97,51.52 662.52,56.64 668.06,57.67 673.61,69.46 679.16,60.28 684.71,55.20 690.26,50.05 695.81,45.69 701.35,43.49 706.90,38.68 712.45,40.96 718.00,42.56 723.55,37.43" fill="none" stroke="#174b83" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            
+            <polyline points="723.55,37.43 729.10,53.93 734.65,71.44 740.19,90.14 745.74,110.13 751.29,130.58 756.84,152.23 762.39,174.29 767.94,196.82 773.48,218.85 779.03,232.20 784.58,238.52 790.13,244.80 795.68,250.80 801.23,256.36 806.77,261.41 812.32,265.71 817.87,269.41 823.42,272.67 828.97,275.52 834.52,278.00 840.06,280.16 845.61,282.01 851.16,283.61 856.71,284.99 862.26,286.17 867.81,287.19 873.35,288.06 878.90,288.81 884.45,289.45 890.00,290.00" fill="none" stroke="#0b6e69" stroke-width="3" stroke-dasharray="" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            
+            <polyline points="723.55,37.43 729.10,42.85 734.65,47.49 740.19,51.54 745.74,55.43 751.29,51.71 756.84,55.41 762.39,51.60 767.94,55.37 773.48,59.25 779.03,55.18 784.58,59.22 790.13,55.34 795.68,59.21 801.23,63.02 806.77,59.25 812.32,63.08 817.87,59.27 823.42,63.13 828.97,59.30 834.52,63.18 840.06,59.36 845.61,63.21 851.16,59.41 856.71,63.25 862.26,67.06 867.81,63.29 873.35,67.10 878.90,63.33 884.45,67.15 890.00,63.38" fill="none" stroke="#c46d1a" stroke-width="3" stroke-dasharray="9 6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            
+            
+            <text x="30.0" y="314.0" text-anchor="middle" class="chart-label">2025-07-03</text>
+            
+            <text x="723.5483870967743" y="314.0" text-anchor="middle" class="chart-label">2025-12-31</text>
+            
+            <text x="890.0000000000001" y="314.0" text-anchor="middle" class="chart-label">2026-02-11</text>
+            
+          </svg>
+          <div class="legend-row">
+            <div class="legend-pill">
+              <span class="legend-swatch" style="background: #174b83"></span>
+              <span>historical close</span>
+            </div>
+            
+            <div class="legend-pill">
+              <span class="legend-swatch" style="background: #0b6e69"></span>
+              <span>Standard forecast</span>
+              <strong>D+1 $290.02</strong>
+            </div>
+            
+            <div class="legend-pill">
+              <span class="legend-swatch" style="background: #c46d1a"></span>
+              <span>Quantum forecast</span>
+              <strong>D+1 $299.34</strong>
+            </div>
+            
+          </div>
+          
+        </section>
+
+        <section class="comparison-grid">
+          
+          
+          <article class="panel scenario-panel scenario-panel-normal">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Standard Forecast</div>
+                <div class="panel-subtitle">
+                  Base close $303.89 on 2025-12-31
+                </div>
+              </div>
+              <div class="panel-tags">
+                <span class="tag">normal</span>
+                <span class="tag tag-amber">
+                  loss bias
+                </span>
+              </div>
+            </div>
+
+            <div class="scenario-topline">
+              <div>
+                <div class="metric-label">D+1 estimate</div>
+                <div class="prediction-hero">$290.02</div>
+                <div class="prediction-line">2026-01-01</div>
+              </div>
+              <div class="delta-chip delta-chip-negative">
+                $-13.87
+                <span>(-4.57%)</span>
+              </div>
+            </div>
+
+            
+            <div class="scenario-band">
+              Live standard interval:
+              $290.02 to $317.76
+            </div>
+            
+
+            <dl class="metric-list scenario-metric-list">
+              <div><dt>Horizon end</dt><dd>$91.50 on 2026-02-11</dd></div>
+              <div><dt>Projected result</dt><dd>$-212.39 (-69.89%)</dd></div>
+              <div><dt>Best gain path</dt><dd>$290.02 on 2026-01-01 (-4.57%)</dd></div>
+              <div><dt>Worst loss path</dt><dd>$91.50 on 2026-02-11 (-69.89%)</dd></div>
+            </dl>
+
+            <div class="scenario-explain">
+              <div class="scenario-explain-title">How it was acquired</div>
+              <p>Generated from the offline Keras recursive forecast stored in `future_predict`, seeded by a 60-day close window.</p>
+              <ul class="rule-list">
+                
+                <li>The batch path rolls predicted closes forward for 30 business days.</li>
+                
+                <li>The line shown here is directly materialized from the stored forecast dataset.</li>
+                
+                <li>The live D+1 Keras request also exposes a 95% interval for the first step.</li>
+                
+                <li>The first offline standard step was constrained from $162.14 to $290.02 using a +/-4.57% daily return cap.</li>
+                
+                <li>The live D+1 standard estimate was also constrained by the recent realized volatility guardrail.</li>
+                
+              </ul>
+            </div>
+          </article>
+          
+          <article class="panel scenario-panel scenario-panel-quant">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Quantum Forecast</div>
+                <div class="panel-subtitle">
+                  Base close $303.89 on 2025-12-31
+                </div>
+              </div>
+              <div class="panel-tags">
+                <span class="tag">quant</span>
+                <span class="tag tag-amber">
+                  loss bias
+                </span>
+              </div>
+            </div>
+
+            <div class="scenario-topline">
+              <div>
+                <div class="metric-label">D+1 estimate</div>
+                <div class="prediction-hero">$299.34</div>
+                <div class="prediction-line">2026-01-01</div>
+              </div>
+              <div class="delta-chip delta-chip-negative">
+                $-4.55
+                <span>(-1.50%)</span>
+              </div>
+            </div>
+
+            
+
+            <dl class="metric-list scenario-metric-list">
+              <div><dt>Horizon end</dt><dd>$282.07 on 2026-02-11</dd></div>
+              <div><dt>Projected result</dt><dd>$-21.82 (-7.18%)</dd></div>
+              <div><dt>Best gain path</dt><dd>$299.34 on 2026-01-01 (-1.50%)</dd></div>
+              <div><dt>Worst loss path</dt><dd>$278.90 on 2026-02-10 (-8.22%)</dd></div>
+            </dl>
+
+            <div class="scenario-explain">
+              <div class="scenario-explain-title">How it was acquired</div>
+              <p>Generated from the offline VQC direction classifier stored in `future_predict`; no quantum runtime token is consumed in the UI.</p>
+              <ul class="rule-list">
+                
+                <li>The batch path is reconstructed from direction outputs over the forecast horizon.</li>
+                
+                <li>Price proxy method: directional_return_proxy_mean_abs_10d_from_quant_signal.</li>
+                
+              </ul>
+            </div>
+          </article>
+          
+          
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Forecast Rows</div>
+                <div class="panel-subtitle">Read-only preview of the rows currently returned to the client.</div>
+              </div>
+              <span class="tag">30 rows</span>
+            </div>
+
+            
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Close</th>
+                    <th>Direction</th>
+                    <th>Proxy</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  
+                  <tr>
+                    <td>2026-01-01</td>
+                    <td>normal</td>
+                    <td>$290.02</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-01</td>
+                    <td>quant</td>
+                    <td>$299.34</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-02</td>
+                    <td>normal</td>
+                    <td>$275.29</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-02</td>
+                    <td>quant</td>
+                    <td>$295.44</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-05</td>
+                    <td>normal</td>
+                    <td>$259.57</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-05</td>
+                    <td>quant</td>
+                    <td>$292.03</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-06</td>
+                    <td>normal</td>
+                    <td>$242.76</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-06</td>
+                    <td>quant</td>
+                    <td>$288.76</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-07</td>
+                    <td>normal</td>
+                    <td>$225.56</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-07</td>
+                    <td>quant</td>
+                    <td>$291.88</td>
+                    <td>up</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-08</td>
+                    <td>normal</td>
+                    <td>$207.36</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-08</td>
+                    <td>quant</td>
+                    <td>$288.77</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-09</td>
+                    <td>normal</td>
+                    <td>$188.80</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-09</td>
+                    <td>quant</td>
+                    <td>$291.97</td>
+                    <td>up</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-12</td>
+                    <td>normal</td>
+                    <td>$169.86</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-12</td>
+                    <td>quant</td>
+                    <td>$288.81</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-13</td>
+                    <td>normal</td>
+                    <td>$151.33</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-13</td>
+                    <td>quant</td>
+                    <td>$285.54</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-14</td>
+                    <td>normal</td>
+                    <td>$140.10</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-14</td>
+                    <td>quant</td>
+                    <td>$288.97</td>
+                    <td>up</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-15</td>
+                    <td>normal</td>
+                    <td>$134.79</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-15</td>
+                    <td>quant</td>
+                    <td>$285.57</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-16</td>
+                    <td>normal</td>
+                    <td>$129.51</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-16</td>
+                    <td>quant</td>
+                    <td>$288.83</td>
+                    <td>up</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-19</td>
+                    <td>normal</td>
+                    <td>$124.47</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-19</td>
+                    <td>quant</td>
+                    <td>$285.58</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-20</td>
+                    <td>normal</td>
+                    <td>$119.79</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-20</td>
+                    <td>quant</td>
+                    <td>$282.37</td>
+                    <td>down</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-21</td>
+                    <td>normal</td>
+                    <td>$115.55</td>
+                    <td>down</td>
+                    <td>no</td>
+                  </tr>
+                  
+                  <tr>
+                    <td>2026-01-21</td>
+                    <td>quant</td>
+                    <td>$285.55</td>
+                    <td>up</td>
+                    <td>yes</td>
+                  </tr>
+                  
+                </tbody>
+              </table>
+            </div>
+            
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Serving Rules</div>
+                <div class="panel-subtitle">Operational constraints enforced by the product.</div>
+              </div>
+            </div>
+            <ul class="rule-list">
+              <li>Standard users can only inspect and filter data.</li>
+              <li>No training artifact can be edited from this interface.</li>
+              <li>No raw, processed, or model file can be uploaded or replaced here.</li>
+              <li>Quantum inference is served only from batch materialized data.</li>
+              <li>Live requests always use the classical local model.</li>
+            </ul>
+          </article>
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Prediction Methods</div>
+                <div class="panel-subtitle">The client view exposes both serving paths, but only one can run live.</div>
+              </div>
+            </div>
+
+            <div class="method-stack">
+              
+              <section class="method-card">
+                <div class="method-head">
+                  <div class="method-title">Classical next-day prediction</div>
+                  <div class="tag tag-teal">online</div>
+                </div>
+                <p class="method-copy">Uses the trained Keras LSTM model and a 60-day closing-price window to estimate the next trading session close.</p>
+                <ul class="rule-list">
+                  
+                  <li>Served live.</li>
+                  
+                  <li>Depends on locally available Keras artifacts and scaler metadata.</li>
+                  
+                </ul>
+              </section>
+              
+              <section class="method-card">
+                <div class="method-head">
+                  <div class="method-title">Quantum future forecast</div>
+                  <div class="tag tag-amber">batch only</div>
+                </div>
+                <p class="method-copy">Serves precomputed quantum rows from the materialized future_predict dataset without triggering IBM Quantum token usage.</p>
+                <ul class="rule-list">
+                  
+                  <li>Never executed online by the client view.</li>
+                  
+                  <li>Some rows may expose a price proxy instead of a direct regressed close.</li>
+                  
+                </ul>
+              </section>
+              
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Data Usage</div>
+                <div class="panel-subtitle">Training and serving context available to the end user.</div>
+              </div>
+            </div>
+
+            <dl class="metric-list">
+              <div><dt>Raw source</dt><dd>Yahoo Finance via yfinance</dd></div>
+              <div><dt>Target</dt><dd>Next-day closing price (D+1)</dd></div>
+              <div><dt>Target column</dt><dd>close</dd></div>
+              <div><dt>Lookback</dt><dd>60</dd></div>
+              <div><dt>Horizon</dt><dd>30</dd></div>
+              <div><dt>Forecast dataset</dt><dd>data/processed/future_predict</dd></div>
+              <div><dt>Forecasts ready</dt><dd>yes</dd></div>
+              <div><dt>Symbols</dt><dd>AMD, ASML, NVDA, QCOM, TSM</dd></div>
+            </dl>
+
+            <ul class="rule-list">
+              
+              <li>The dashboard is read-only and exposes no write path to raw, processed, or model data.</li>
+              
+              <li>Online prediction uses only the classical model.</li>
+              
+              <li>Quantum rows are served only when they were generated offline and stored locally or in S3/Athena.</li>
+              
+            </ul>
+          </article>
+        </section>
+
+        <section class="panel-grid">
+          <article class="panel panel-chart">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Keras Training Curve</div>
+                <div class="panel-subtitle">
+                  
+                  Extraction 2026-04-22 | Trained 20260423T025016Z
+                  
+                </div>
+              </div>
+            </div>
+
+            
+            <svg class="forecast-chart" viewBox="0 0 760.0 220.0" preserveAspectRatio="none" aria-label="Training chart">
+              
+              <polyline points="22.00,198.00 260.67,197.54 499.33,196.98 738.00,197.03" fill="none" stroke="#174b83" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+              
+              
+              <polyline points="22.00,113.47 260.67,47.44 499.33,42.04 738.00,22.00" fill="none" stroke="#b45f06" stroke-width="3" stroke-dasharray="8 5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+              
+            </svg>
+            <div class="legend-row">
+              <div class="legend-pill"><span class="legend-swatch" style="background:#174b83"></span><span>loss</span></div>
+              <div class="legend-pill"><span class="legend-swatch" style="background:#b45f06"></span><span>val_loss</span></div>
+            </div>
+            
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Training Data Snapshot</div>
+                <div class="panel-subtitle">Latest read-only metrics for the selected asset.</div>
+              </div>
+            </div>
+
+            <div class="training-grid">
+              <section class="training-card">
+                <div class="training-title">Classical Keras</div>
+                
+                <dl class="metric-list">
+                  <div><dt>Best epoch</dt><dd>1</dd></div>
+                  <div><dt>Epochs ran</dt><dd>4</dd></div>
+                  <div><dt>Validation MAE</dt><dd>21.19</dd></div>
+                  <div><dt>Validation RMSE</dt><dd>29.57</dd></div>
+                  <div><dt>Test MAE</dt><dd>68.57</dd></div>
+                  <div><dt>Rows</dt><dd>6479</dd></div>
+                </dl>
+                
+              </section>
+
+              <section class="training-card">
+                <div class="training-title">Quantum Batch Model</div>
+                
+                <dl class="metric-list">
+                  <div><dt>Backend</dt><dd>fake_manila</dd></div>
+                  <div><dt>Mode</dt><dd>local</dd></div>
+                  <div><dt>Qubits</dt><dd>2</dd></div>
+                  <div><dt>Val Accuracy</dt><dd>45.31%</dd></div>
+                  <div><dt>Val F1</dt><dd>0.41</dd></div>
+                  <div><dt>Optimizer</dt><dd>cobyla</dd></div>
+                </dl>
+                
+              </section>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+    </div>
+  </body>
+</html>

@@ -231,22 +231,18 @@ Useful local URLs:
 
 ### Export a static GitHub Pages build
 
-The Flask frontend can be rendered as static HTML for GitHub Pages. S3 access happens
-only before the export, when the build machine syncs the private artifacts locally; the
-published site contains pre-rendered HTML/CSS and does not call S3, FastAPI, or model
-endpoints from the browser.
+The Flask frontend can be rendered as static HTML for GitHub Pages. The published site
+contains pre-rendered HTML/CSS and does not call S3, FastAPI, or model endpoints from
+the browser.
 
 ```bash
-# Optional: sync the required private artifacts before exporting.
-aws s3 sync s3://<processed-bucket>/<processed-prefix>/ data/processed/
-aws s3 sync s3://<model-bucket>/<model-prefix>/ models/
-
 # Export static pages into ./site.
 python scripts/export_static_front.py --clean
 ```
 
-Publish the generated `site/` directory with GitHub Pages or upload it as the Pages
-artifact in a GitHub Actions workflow.
+The GitHub Pages workflow publishes the committed `site/` directory directly. To update
+the public snapshot, regenerate `site/` locally with the data artifacts available, then
+commit the updated files.
 
 ### Environment variables
 
