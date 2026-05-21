@@ -999,6 +999,16 @@ def _confusion_block(matrix: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
+def _markdown_relative_path(*, target: Path | str, base_dir: Path) -> str:
+    """Return a portable relative URL for Markdown reports."""
+    target_path = Path(target)
+    try:
+        relative_path = Path(os.path.relpath(target_path, start=base_dir))
+    except ValueError:
+        relative_path = target_path
+    return relative_path.as_posix()
+
+
 def _interpret_direction(metrics: DirectionComparisonMetrics, model_name: str) -> str:
     """Generate an automatic plain-English interpretation of directional metrics."""
     notes: list[str] = []
@@ -1193,6 +1203,14 @@ def write_markdown_report(
     confusion_chart_path: Path,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    dashboard_url = _markdown_relative_path(
+        target=dashboard_path,
+        base_dir=destination.parent,
+    )
+    confusion_chart_url = _markdown_relative_path(
+        target=confusion_chart_path,
+        base_dir=destination.parent,
+    )
 
     # --- timing ---
     faster_model = "Keras LSTM" if keras_seconds < quantum_seconds else "Quantum VQC"
@@ -1392,10 +1410,13 @@ Always Up    {_bar(d.f1)}  {d.f1:.2f}
 
 ## 9. Visual assets
 
-| Artifact | Local path |
-|---|---|
-| Main dashboard | `{dashboard_path}` |
-| Confusion matrices | `{confusion_chart_path}` |
+### Main dashboard
+
+![Comparison dashboard]({dashboard_url})
+
+### Confusion matrices
+
+![Comparison confusion matrices]({confusion_chart_url})
 
 ---
 
@@ -1453,18 +1474,34 @@ def _unified_metric_table(assets: list[ComparisonAssetArtifact]) -> str:
     return "\n".join(lines)
 
 
-def _unified_artifact_table(assets: list[ComparisonAssetArtifact]) -> str:
+def _unified_artifact_table(
+    assets: list[ComparisonAssetArtifact],
+    *,
+    report_dir: Path,
+) -> str:
     lines = [
         "| Symbol | Report | Dashboard | Confusion matrices |",
         "|---|---|---|---|",
     ]
     for asset in assets:
+        report_url = _markdown_relative_path(
+            target=asset.report_local_path,
+            base_dir=report_dir,
+        )
+        dashboard_url = _markdown_relative_path(
+            target=asset.dashboard_local_path,
+            base_dir=report_dir,
+        )
+        confusion_url = _markdown_relative_path(
+            target=asset.confusion_matrix_local_path,
+            base_dir=report_dir,
+        )
         lines.append(
             "| "
             f"{asset.symbol} | "
-            f"`{asset.report_local_path}` | "
-            f"`{asset.dashboard_local_path}` | "
-            f"`{asset.confusion_matrix_local_path}` |"
+            f"[Open report]({report_url}) | "
+            f"[![{asset.symbol} dashboard]({dashboard_url})]({dashboard_url}) | "
+            f"[![{asset.symbol} confusion matrices]({confusion_url})]({confusion_url}) |"
         )
     return "\n".join(lines)
 
@@ -1547,7 +1584,7 @@ This unified report is generated from the per-symbol reports and artifacts produ
 
 ## Per-symbol artifacts
 
-{_unified_artifact_table(assets)}
+{_unified_artifact_table(assets, report_dir=destination.parent)}
 
 ---
 
