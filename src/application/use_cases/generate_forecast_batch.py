@@ -13,6 +13,9 @@ import joblib
 import numpy as np
 import pandas as pd
 
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 from src.application.services.forecast_guardrails import apply_standard_forecast_guardrail
 from src.application.services.model_promotion_registry import ModelPromotionRegistry
 

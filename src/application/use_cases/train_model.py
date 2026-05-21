@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+import os
 import shutil
 import sys
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 try:
     import tensorflow as tf

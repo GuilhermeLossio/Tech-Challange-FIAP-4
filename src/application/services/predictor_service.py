@@ -5,9 +5,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import json
 import math
+import os
 from typing import Any
 
 import numpy as np
+
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 from src.application.services.forecast_guardrails import (
     apply_standard_forecast_guardrail,

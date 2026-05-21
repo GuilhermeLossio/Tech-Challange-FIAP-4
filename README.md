@@ -229,6 +229,25 @@ Useful local URLs:
 | FastAPI ReDoc | http://localhost:8000/redoc |
 | Flask frontend | http://localhost:5001/ |
 
+### Export a static GitHub Pages build
+
+The Flask frontend can be rendered as static HTML for GitHub Pages. S3 access happens
+only before the export, when the build machine syncs the private artifacts locally; the
+published site contains pre-rendered HTML/CSS and does not call S3, FastAPI, or model
+endpoints from the browser.
+
+```bash
+# Optional: sync the required private artifacts before exporting.
+aws s3 sync s3://<processed-bucket>/<processed-prefix>/ data/processed/
+aws s3 sync s3://<model-bucket>/<model-prefix>/ models/
+
+# Export static pages into ./site.
+python scripts/export_static_front.py --clean
+```
+
+Publish the generated `site/` directory with GitHub Pages or upload it as the Pages
+artifact in a GitHub Actions workflow.
+
 ### Environment variables
 
 Important local variables:

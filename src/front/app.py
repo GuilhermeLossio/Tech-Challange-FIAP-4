@@ -16,6 +16,7 @@ from src.infrastructure.config.settings import ForecastPipelineSettings
 
 FRONT_TITLE = "Signal Deck"
 DEFAULT_SYMBOL = "NVDA"
+DEFAULT_HORIZON_DAYS = 30
 SIX_MONTH_TRADING_DAYS = 126
 
 
@@ -270,15 +271,17 @@ def _resolve_front_horizon_days(
     lookback: int,
 ) -> int:
     if raw_value is not None and raw_value.strip():
-        return _parse_positive_int(raw_value, default=30)
+        return _parse_positive_int(raw_value, default=DEFAULT_HORIZON_DAYS)
 
     available_horizons = future_prediction_service.list_available_horizon_days(
         symbol=symbol,
         lookback=lookback,
     )
     if available_horizons:
-        return available_horizons[-1]
-    return 30
+        if DEFAULT_HORIZON_DAYS in available_horizons:
+            return DEFAULT_HORIZON_DAYS
+        return available_horizons[0]
+    return DEFAULT_HORIZON_DAYS
 
 
 def _build_market_context_chart(
@@ -351,13 +354,17 @@ def _build_market_context_chart(
             points.append(
                 f"{x_for(index):.2f},{y_for(float(row['predicted_close'])):.2f}"
             )
+        first_row = rows[0]
         last_row = rows[-1]
         forecast_series.append(
             {
                 "name": predict_type,
+                "label": "Standard forecast" if predict_type == "normal" else "Quantum forecast",
                 "color": colors.get(predict_type, "#334155"),
                 "dasharray": dasharrays.get(predict_type, ""),
                 "polyline": " ".join(points),
+                "day_one_value": float(first_row["predicted_close"]),
+                "day_one_date": str(first_row["forecast_date"]),
                 "last_value": float(last_row["predicted_close"]),
                 "last_date": str(last_row["forecast_date"]),
             }

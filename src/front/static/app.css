@@ -117,6 +117,38 @@ body::before {
   margin-top: 22px;
 }
 
+.static-nav {
+  display: grid;
+  gap: 10px;
+}
+
+.static-nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: rgba(246, 242, 232, 0.82);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.static-nav-link::after {
+  content: "view";
+  color: rgba(230, 197, 157, 0.78);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.static-nav-link-active {
+  border-color: rgba(230, 197, 157, 0.42);
+  color: #fff7e9;
+  background: rgba(230, 197, 157, 0.12);
+}
+
 .filter-title {
   margin-bottom: 14px;
   color: rgba(246, 242, 232, 0.9);

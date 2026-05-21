@@ -32,6 +32,19 @@
           <div class="brand-sub">Semiconductor Forecast Client View</div>
         </div>
 
+        {% if static_export %}
+        <div class="filter-panel">
+          <div class="filter-title">Static Snapshot</div>
+          <div class="static-nav">
+            {% for item in supported_symbols %}
+            <a
+              class="static-nav-link {% if item == symbol %}static-nav-link-active{% endif %}"
+              href="{{ url_for('dashboard', symbol=item, predict_type='all', lookback=lookback, horizon_days=horizon_days, limit=row_limit) }}"
+            >{{ item }}</a>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
         <form class="filter-panel" method="get" action="/">
           <div class="filter-title">Read-Only Filters</div>
 
@@ -95,10 +108,15 @@
             <a class="secondary-action" href="{{ url_for('dashboard') }}">Reset</a>
           </div>
         </form>
+        {% endif %}
 
         <div class="read-only-note">
           <div class="pill pill-locked">Read Only</div>
+          {% if static_export %}
+          <p>This GitHub Pages build contains pre-rendered snapshots only. It does not call S3, FastAPI, or any model endpoint from the browser.</p>
+          {% else %}
           <p>Standard users can filter and inspect predictions and training data, but this interface exposes no mutation or upload action.</p>
+          {% endif %}
         </div>
       </aside>
 
@@ -275,8 +293,8 @@
             {% for series in market_context_chart.forecast_series %}
             <div class="legend-pill">
               <span class="legend-swatch" style="background: {{ series.color }}"></span>
-              <span>{{ series.name }}</span>
-              <strong>${{ '%.2f'|format(series.last_value) }}</strong>
+              <span>{{ series.label }}</span>
+              <strong>D+1 ${{ '%.2f'|format(series.day_one_value) }}</strong>
             </div>
             {% endfor %}
           </div>
