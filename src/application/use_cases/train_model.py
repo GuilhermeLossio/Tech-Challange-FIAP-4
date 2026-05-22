@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+from html import escape
 from pathlib import Path
 import os
 import shutil
@@ -88,8 +89,14 @@ class KerasModelArtifact:
     published_model_local_path: str | None
     model_local_path: str
     history_local_path: str
+    report_local_path: str
+    loss_chart_local_path: str
+    metrics_chart_local_path: str
     model_s3_uri: str | None
     history_s3_uri: str | None
+    report_s3_uri: str | None
+    loss_chart_s3_uri: str | None
+    metrics_chart_s3_uri: str | None
     train_metrics: SplitMetrics
     validation_metrics: SplitMetrics
     test_metrics: SplitMetrics
@@ -259,6 +266,84 @@ class KerasTrainingService:
                 y_raw=dataset["y_test_raw"],
                 scaler_metadata=scaler_metadata,
             )
+            loss_chart_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="training_loss.svg",
+            )
+            loss_chart_path = self._local_store.prepare_path(loss_chart_relative_path)
+            self._write_line_chart_svg(
+                destination=loss_chart_path,
+                title=f"{symbol.upper()} Training Loss",
+                series={
+                    "loss": history_payload["history"].get("loss", []),
+                    "val_loss": history_payload["history"].get("val_loss", []),
+                },
+                y_label="MSE loss",
+            )
+            loss_chart_s3_uri = None
+            if self._s3_store is not None:
+                loss_chart_s3_uri = self._s3_store.upload_file(
+                    local_path=loss_chart_path,
+                    relative_path=loss_chart_relative_path,
+                )
+
+            metrics_chart_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="training_metrics.svg",
+            )
+            metrics_chart_path = self._local_store.prepare_path(metrics_chart_relative_path)
+            self._write_keras_metrics_svg(
+                destination=metrics_chart_path,
+                train_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+            )
+            metrics_chart_s3_uri = None
+            if self._s3_store is not None:
+                metrics_chart_s3_uri = self._s3_store.upload_file(
+                    local_path=metrics_chart_path,
+                    relative_path=metrics_chart_relative_path,
+                )
+
+            report_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="training_report.md",
+            )
+            report_path = self._local_store.prepare_path(report_relative_path)
+            self._write_training_report(
+                destination=report_path,
+                symbol=symbol,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                dataset=dataset,
+                history_payload=history_payload,
+                model_path=model_path,
+                published_model_path=published_model_path,
+                history_path=history_path,
+                loss_chart_path=loss_chart_path,
+                metrics_chart_path=metrics_chart_path,
+                train_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+            )
+            report_s3_uri = None
+            if self._s3_store is not None:
+                report_s3_uri = self._s3_store.upload_file(
+                    local_path=report_path,
+                    relative_path=report_relative_path,
+                )
 
             artifacts.append(
                 KerasModelArtifact(
@@ -274,8 +359,14 @@ class KerasTrainingService:
                     published_model_local_path=str(published_model_path),
                     model_local_path=str(model_path),
                     history_local_path=str(history_path),
+                    report_local_path=str(report_path),
+                    loss_chart_local_path=str(loss_chart_path),
+                    metrics_chart_local_path=str(metrics_chart_path),
                     model_s3_uri=model_s3_uri,
                     history_s3_uri=history_s3_uri,
+                    report_s3_uri=report_s3_uri,
+                    loss_chart_s3_uri=loss_chart_s3_uri,
+                    metrics_chart_s3_uri=metrics_chart_s3_uri,
                     train_metrics=train_metrics,
                     validation_metrics=validation_metrics,
                     test_metrics=test_metrics,
@@ -535,6 +626,290 @@ class KerasTrainingService:
             mape=mape,
         )
 
+    def _write_training_report(
+        self,
+        *,
+        destination: Path,
+        symbol: str,
+        request: KerasTrainingRequest,
+        generated_at_utc: str,
+        dataset: dict[str, Any],
+        history_payload: dict[str, Any],
+        model_path: Path,
+        published_model_path: Path | None,
+        history_path: Path,
+        loss_chart_path: Path,
+        metrics_chart_path: Path,
+        train_metrics: SplitMetrics,
+        validation_metrics: SplitMetrics,
+        test_metrics: SplitMetrics,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        rows = "\n".join(
+            self._format_regression_metric_row(name, metrics)
+            for name, metrics in (
+                ("Train", train_metrics),
+                ("Validation", validation_metrics),
+                ("Test", test_metrics),
+            )
+        )
+        content = f"""# Relatorio de Treinamento - {symbol.upper()}
+
+## Execucao
+
+| Campo | Valor |
+| --- | --- |
+| Gerado em UTC | `{generated_at_utc}` |
+| Source | `{request.source}` |
+| Data de extracao | `{request.extraction_date.isoformat()}` |
+| Coluna alvo | `{request.target_column}` |
+| Lookback | `{request.lookback}` |
+| Epocas solicitadas | `{request.epochs}` |
+| Epocas executadas | `{history_payload["epochs_ran"]}` |
+| Melhor epoca | `{history_payload["best_epoch"]}` |
+| Batch size | `{request.batch_size}` |
+| Paciencia do early stopping | `{request.patience}` |
+| Learning rate | `{request.learning_rate}` |
+| Seed | `{request.seed}` |
+
+## Dataset
+
+| Split | Linhas |
+| --- | ---: |
+| Train | {dataset["train_count"]} |
+| Validation | {dataset["validation_count"]} |
+| Test | {dataset["test_count"]} |
+| Total | {dataset["row_count"]} |
+
+## Metricas
+
+| Split | Samples | Loss MSE | MAE scaled | MAE | RMSE | MAPE % |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{rows}
+
+## Graficos
+
+![Training loss]({loss_chart_path.name})
+
+![Training metrics]({metrics_chart_path.name})
+
+## Artefatos
+
+| Artefato | Caminho |
+| --- | --- |
+| Modelo imutavel | `{model_path}` |
+| Modelo latest publicado | `{published_model_path}` |
+| History JSON | `{history_path}` |
+
+## Notas Tecnicas
+
+- Este relatorio descreve apenas o comportamento de treinamento. A qualidade real deve ser avaliada nas previsoes geradas contra baselines.
+- O LSTM recebe uma janela univariada de lags, portanto pode subutilizar contexto de mercado e ajustar ruido de preco.
+- Grandes diferencas entre validacao e teste indicam generalizacao temporal fraca, nao evidencia pronta para producao.
+"""
+        destination.write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _format_regression_metric_row(name: str, metrics: SplitMetrics) -> str:
+        return (
+            f"| {name} | {metrics.sample_count} | "
+            f"{KerasTrainingService._format_optional_float(metrics.loss_mse)} | "
+            f"{KerasTrainingService._format_optional_float(metrics.mae_scaled)} | "
+            f"{KerasTrainingService._format_optional_float(metrics.mae)} | "
+            f"{KerasTrainingService._format_optional_float(metrics.rmse)} | "
+            f"{KerasTrainingService._format_optional_float(metrics.mape)} |"
+        )
+
+    @staticmethod
+    def _format_optional_float(value: float | None) -> str:
+        if value is None:
+            return "n/a"
+        return f"{value:.6g}"
+
+    @staticmethod
+    def _write_line_chart_svg(
+        *,
+        destination: Path,
+        title: str,
+        series: dict[str, list[float]],
+        y_label: str,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        width, height = 840, 360
+        left, right, top, bottom = 64, 28, 44, 54
+        plot_width = width - left - right
+        plot_height = height - top - bottom
+        colors = {"loss": "#1f77b4", "val_loss": "#d62728"}
+        values = [
+            float(value)
+            for values_for_series in series.values()
+            for value in values_for_series
+            if value is not None and np.isfinite(value)
+        ]
+        max_len = max((len(values_for_series) for values_for_series in series.values()), default=0)
+        if not values or max_len == 0:
+            destination.write_text(
+                KerasTrainingService._empty_svg(title, "No training history available."),
+                encoding="utf-8",
+            )
+            return
+
+        y_min = min(values)
+        y_max = max(values)
+        if y_min == y_max:
+            y_min -= 1.0
+            y_max += 1.0
+        padding = (y_max - y_min) * 0.08
+        y_min -= padding
+        y_max += padding
+
+        def x_for(index: int) -> float:
+            denominator = max(max_len - 1, 1)
+            return left + (index / denominator) * plot_width
+
+        def y_for(value: float) -> float:
+            return top + ((y_max - value) / (y_max - y_min)) * plot_height
+
+        polylines: list[str] = []
+        legend: list[str] = []
+        for index, (name, raw_values) in enumerate(series.items()):
+            clean_values = [
+                float(value)
+                for value in raw_values
+                if value is not None and np.isfinite(value)
+            ]
+            if not clean_values:
+                continue
+            points = " ".join(
+                f"{x_for(point_index):.1f},{y_for(value):.1f}"
+                for point_index, value in enumerate(clean_values)
+            )
+            color = colors.get(name, "#2ca02c")
+            polylines.append(
+                f'<polyline points="{points}" fill="none" stroke="{color}" '
+                'stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />'
+            )
+            legend_y = 72 + index * 22
+            legend.append(
+                f'<rect x="690" y="{legend_y - 10}" width="12" height="12" fill="{color}" />'
+                f'<text x="708" y="{legend_y}" font-size="13">{escape(name)}</text>'
+            )
+
+        y_ticks = []
+        for tick in range(5):
+            value = y_min + ((y_max - y_min) * tick / 4)
+            y = y_for(value)
+            y_ticks.append(
+                f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
+                'stroke="#e5e7eb" />'
+                f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" '
+                f'font-size="11">{value:.4g}</text>'
+            )
+
+        svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="{left}" y="26" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="{left}" y="{height - 16}" font-size="12">Epoch</text>
+<text x="18" y="{top + plot_height / 2:.1f}" font-size="12" transform="rotate(-90 18 {top + plot_height / 2:.1f})">{escape(y_label)}</text>
+{''.join(y_ticks)}
+<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" stroke="#111827" />
+<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" stroke="#111827" />
+{''.join(polylines)}
+{''.join(legend)}
+</svg>
+"""
+        destination.write_text(svg, encoding="utf-8")
+
+    @staticmethod
+    def _write_keras_metrics_svg(
+        *,
+        destination: Path,
+        train_metrics: SplitMetrics,
+        validation_metrics: SplitMetrics,
+        test_metrics: SplitMetrics,
+    ) -> None:
+        bars = [
+            ("Train MAE", train_metrics.mae, "#1f77b4"),
+            ("Validation MAE", validation_metrics.mae, "#ff7f0e"),
+            ("Test MAE", test_metrics.mae, "#d62728"),
+            ("Train RMSE", train_metrics.rmse, "#4f46e5"),
+            ("Validation RMSE", validation_metrics.rmse, "#059669"),
+            ("Test RMSE", test_metrics.rmse, "#b91c1c"),
+        ]
+        KerasTrainingService._write_bar_chart_svg(
+            destination=destination,
+            title="Regression Metrics by Split",
+            bars=bars,
+            y_label="Original target scale",
+        )
+
+    @staticmethod
+    def _write_bar_chart_svg(
+        *,
+        destination: Path,
+        title: str,
+        bars: list[tuple[str, float | None, str]],
+        y_label: str,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        values = [float(value) for _, value, _ in bars if value is not None and np.isfinite(value)]
+        if not values:
+            destination.write_text(
+                KerasTrainingService._empty_svg(title, "No metric values available."),
+                encoding="utf-8",
+            )
+            return
+        width, height = 900, 380
+        left, right, top, bottom = 72, 24, 46, 104
+        plot_width = width - left - right
+        plot_height = height - top - bottom
+        y_max = max(values) * 1.12
+        y_max = y_max if y_max > 0 else 1.0
+        bar_gap = 18
+        bar_width = (plot_width - bar_gap * (len(bars) - 1)) / max(len(bars), 1)
+        svg_bars: list[str] = []
+        for index, (label, value, color) in enumerate(bars):
+            numeric_value = 0.0 if value is None or not np.isfinite(value) else float(value)
+            x = left + index * (bar_width + bar_gap)
+            bar_height = (numeric_value / y_max) * plot_height
+            y = top + plot_height - bar_height
+            svg_bars.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" '
+                f'height="{bar_height:.1f}" fill="{color}" />'
+                f'<text x="{x + bar_width / 2:.1f}" y="{y - 6:.1f}" '
+                f'text-anchor="middle" font-size="11">{numeric_value:.4g}</text>'
+                f'<text x="{x + bar_width / 2:.1f}" y="{height - 72}" '
+                f'text-anchor="end" font-size="11" transform="rotate(-35 {x + bar_width / 2:.1f} {height - 72})">{escape(label)}</text>'
+            )
+        y_ticks = []
+        for tick in range(5):
+            value = y_max * tick / 4
+            y = top + plot_height - (value / y_max) * plot_height
+            y_ticks.append(
+                f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#e5e7eb" />'
+                f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" font-size="11">{value:.4g}</text>'
+            )
+        svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="{left}" y="28" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="18" y="{top + plot_height / 2:.1f}" font-size="12" transform="rotate(-90 18 {top + plot_height / 2:.1f})">{escape(y_label)}</text>
+{''.join(y_ticks)}
+<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="#111827" />
+<line x1="{left}" y1="{top + plot_height}" x2="{width - right}" y2="{top + plot_height}" stroke="#111827" />
+{''.join(svg_bars)}
+</svg>
+"""
+        destination.write_text(svg, encoding="utf-8")
+
+    @staticmethod
+    def _empty_svg(title: str, message: str) -> str:
+        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="260" viewBox="0 0 840 260">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="42" y="42" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="42" y="92" font-size="14">{escape(message)}</text>
+</svg>
+"""
+
     @staticmethod
     def _inverse_scale(
         values: np.ndarray,
@@ -611,6 +986,26 @@ class KerasTrainingService:
             / f"extraction_date={extraction_date.isoformat()}"
             / f"trained_at={trained_at_token}"
             / "history.json"
+        )
+
+    @staticmethod
+    def _build_run_artifact_relative_path(
+        *,
+        source: str,
+        symbol: str,
+        lookback: int,
+        extraction_date: date,
+        trained_at_token: str,
+        filename: str,
+    ) -> Path:
+        return (
+            Path("training_runs")
+            / f"source={source}"
+            / f"symbol={symbol.upper()}"
+            / f"lookback={lookback}"
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"trained_at={trained_at_token}"
+            / filename
         )
 
     @staticmethod

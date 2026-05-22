@@ -74,6 +74,7 @@ def create_app() -> Flask:
             future_prediction_service=future_prediction_service,
             symbol=symbol,
             lookback=lookback,
+            requested_extraction_date=_parse_iso_date(selected_extraction_date),
         )
         row_limit = _parse_positive_int(request.args.get("limit"), default=12)
 
@@ -242,6 +243,7 @@ def create_app() -> Flask:
             data_usage_summary=data_usage_summary,
             warnings=warnings,
             today_utc=datetime.utcnow().strftime("%Y-%m-%d"),
+            static_export=bool(app.config.get("STATIC_EXPORT", False)),
         )
 
     return app
@@ -269,9 +271,18 @@ def _resolve_front_horizon_days(
     future_prediction_service: FuturePredictionService,
     symbol: str,
     lookback: int,
+    requested_extraction_date: date | None = None,
 ) -> int:
     if raw_value is not None and raw_value.strip():
         return _parse_positive_int(raw_value, default=DEFAULT_HORIZON_DAYS)
+
+    latest_horizon = future_prediction_service.resolve_latest_horizon_days(
+        symbol=symbol,
+        lookback=lookback,
+        requested_extraction_date=requested_extraction_date,
+    )
+    if latest_horizon is not None:
+        return latest_horizon
 
     available_horizons = future_prediction_service.list_available_horizon_days(
         symbol=symbol,

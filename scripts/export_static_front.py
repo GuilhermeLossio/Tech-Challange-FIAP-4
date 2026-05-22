@@ -23,7 +23,7 @@ from src.application.services.future_prediction_service import (  # noqa: E402
     FuturePredictionService,
 )
 from src.application.services.predictor_service import StandardPredictorService  # noqa: E402
-from src.front.app import DEFAULT_HORIZON_DAYS, DEFAULT_SYMBOL, create_app  # noqa: E402
+from src.front.app import DEFAULT_SYMBOL, create_app  # noqa: E402
 from src.infrastructure.config.settings import ForecastPipelineSettings  # noqa: E402
 
 
@@ -58,8 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--horizon-days",
         type=int,
-        default=DEFAULT_HORIZON_DAYS,
-        help="Forecast horizon to render into each static page.",
+        default=None,
+        help=(
+            "Forecast horizon to render into each static page. Defaults to the "
+            "latest materialized horizon for each symbol."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -109,9 +112,10 @@ def main() -> None:
                 "symbol": symbol,
                 "predict_type": "all",
                 "lookback": str(args.lookback),
-                "horizon_days": str(args.horizon_days),
                 "limit": str(args.limit),
             }
+            if args.horizon_days is not None:
+                params["horizon_days"] = str(args.horizon_days)
             if args.extraction_date:
                 params["extraction_date"] = args.extraction_date
 

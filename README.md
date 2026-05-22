@@ -336,21 +336,22 @@ For extraction date `2026-04-26`, this produces `horizon_days=179` from the last
 
 ### 6. Compare classical and quantum paths
 
-Safe simulator run:
+Quantum training is disabled by default. The normal training path should stay classical.
+Legacy local-simulator comparison requires an explicit escape hatch:
 
 ```bash
-python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantum-mode local --skip-s3
+python scripts/train_and_compare_models.py --extraction-date 2026-04-22 --quantum-mode local --allow-local-quantum-training --skip-s3
 ```
 
-Small IBM Quantum hardware run:
+The script refuses `--quantum-mode cloud` before heavy imports. IBM Quantum hardware is reserved for forecast inference only, never training.
+
+Small IBM Quantum forecast-inference run:
 
 ```bash
-python scripts/train_and_compare_models.py --symbols NVDA --extraction-date 2026-04-22 --quantum-mode cloud --quantum-shots 256 --quantum-optimizer spsa --quantum-optimizer-maxiter 15 --quantum-max-train-samples 24 --quantum-max-validation-samples 16 --quantum-max-test-samples 16 --confirm-ibm-runtime-cost --skip-s3
+python scripts/generate_forecast.py --symbols NVDA --extraction-date 2026-04-26 --skip-normal --horizon-days 1 --quantum-runtime-mode cloud --quantum-shots 128 --max-cloud-quantum-predictions 1 --confirm-ibm-runtime-cost --skip-s3 --skip-athena
 ```
 
-Cloud mode can consume IBM Quantum runtime minutes. It requires `--confirm-ibm-runtime-cost` and should be used only for controlled, single-symbol benchmark runs.
-
-The script refuses `--quantum-mode cloud` before heavy imports unless that confirmation flag is present. This protects IBM Quantum minutes even when TensorFlow, Qiskit, or matplotlib are not installed correctly.
+Cloud prediction can consume IBM Quantum runtime minutes. It requires `--confirm-ibm-runtime-cost` and is capped by `--max-cloud-quantum-predictions`, where requested predictions are roughly `symbols * horizon_days`.
 
 The generated `comparison_report.md` includes directional metrics, confusion matrices, execution environment, backend, shots, optimizer budget, available function-evaluation metadata, IBM hardware observability guidance, a cost-profile note, and an article-ready Keras vs Qiskit comparison table.
 
@@ -382,7 +383,7 @@ The project treats the quantum path as an experimental benchmark, not as a produ
 |---|---|---:|
 | Classical Keras LSTM | Production baseline and next-day price regression | none |
 | Qiskit simulator | Quantum pipeline validation and repeatable local comparison | none |
-| IBM Quantum hardware | Real backend, real queue, real noise, and runtime-cost measurement | consumes minutes |
+| IBM Quantum hardware | Forecast inference only on a real backend | consumes minutes |
 
 The quantum model receives normalized and compressed inputs:
 
@@ -402,17 +403,14 @@ Circuit diagrams:
 - [VQC circuit architecture](Docs/graphs/quantum_vqc_circuit_architecture.svg)
 - [Quantum hardware execution loop](Docs/graphs/quantum_hardware_execution_loop.svg)
 
-Recommended hardware limits:
+Recommended hardware limits for forecast inference:
 
 | Parameter | Suggested value |
 |---|---:|
-| `quantum_num_qubits` | 2 or 3 |
-| `quantum_feature_map_reps` | 1 |
-| `quantum_ansatz_reps` | 1 |
+| `horizon_days` | 1 to 5 |
+| `symbols` | 1 |
 | `quantum_shots` | 128 to 256 |
-| `quantum_optimizer` | `spsa` |
-| `quantum_optimizer_maxiter` | 10 to 20 |
-| `quantum_max_train_samples` | 16 to 32 |
+| `max_cloud_quantum_predictions` | equal to `symbols * horizon_days` |
 
 The final report exposes backend, execution mode, shots, optimizer, function evaluations when available, elapsed time, sample counts, directional metrics, and whether IBM Quantum minutes were consumed. The full decision note is in [Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md](Docs/2026-05-16-quantum-simulator-and-real-hardware-benchmark.md).
 

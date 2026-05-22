@@ -214,10 +214,19 @@ def main() -> int:
             f"test_rmse={asset.test_metrics.rmse!r}"
         )
         print(f"  history: {asset.history_local_path}")
+        print(f"  report: {asset.report_local_path}")
+        print(f"  loss chart: {asset.loss_chart_local_path}")
+        print(f"  metrics chart: {asset.metrics_chart_local_path}")
         if asset.model_s3_uri:
             print(f"  model S3: {asset.model_s3_uri}")
         if asset.history_s3_uri:
             print(f"  history S3: {asset.history_s3_uri}")
+        if asset.report_s3_uri:
+            print(f"  report S3: {asset.report_s3_uri}")
+        if asset.loss_chart_s3_uri:
+            print(f"  loss chart S3: {asset.loss_chart_s3_uri}")
+        if asset.metrics_chart_s3_uri:
+            print(f"  metrics chart S3: {asset.metrics_chart_s3_uri}")
 
     return 0
 

@@ -505,6 +505,13 @@ class ProvisionAthenaCatalogUseCase:
             ("predicted_scaled", "double"),
             ("predicted_direction", "bigint"),
             ("predicted_direction_label", "string"),
+            ("raw_model_predicted_close", "double"),
+            ("prediction_constraint_applied", "boolean"),
+            ("prediction_constraint_method", "string"),
+            ("prediction_return_cap", "double"),
+            ("predicted_step_return", "double"),
+            ("horizon_return_from_last_observed", "double"),
+            ("price_proxy_return", "double"),
             ("last_observed_date", "string"),
             ("last_observed_close", "double"),
             ("input_window_start_date", "string"),
@@ -577,7 +584,19 @@ class ProvisionAthenaCatalogUseCase:
         if output_s3_uri:
             kwargs["ResultConfiguration"] = {"OutputLocation": output_s3_uri}
 
-        response = client.start_query_execution(**kwargs)
+        try:
+            response = client.start_query_execution(**kwargs)
+        except Exception as exc:
+            message = str(exc)
+            if "No output location provided" in message:
+                raise RuntimeError(
+                    "Athena requires an output S3 location for query results. "
+                    "Set ATHENA_OUTPUT_S3_URI in .env or pass "
+                    "--athena-output-s3-uri s3://<bucket>/<prefix>/ on the "
+                    "script command. If you only need local/S3 forecast files "
+                    "and do not want Athena catalog repair, pass --skip-athena."
+                ) from exc
+            raise
         return str(response["QueryExecutionId"])
 
     def _wait_for_query(

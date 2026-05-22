@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+from html import escape
 from pathlib import Path
 import json
 import os
@@ -69,6 +70,12 @@ class ForecastBatchRequest:
     include_normal: bool = True
     include_quantum: bool = True
     upload_to_s3: bool = True
+    quantum_runtime_mode: str = "local"
+    quantum_backend_name: str | None = None
+    quantum_shots: int = 1024
+    quantum_optimization_level: int = 1
+    confirm_ibm_runtime_cost: bool = False
+    max_cloud_quantum_predictions: int = 5
 
 
 @dataclass(frozen=True)
@@ -82,8 +89,13 @@ class ForecastAssetArtifact:
     last_observed_close: float
     normal_model_local_path: str | None
     quantum_model_local_path: str | None
+    forecast_summary: dict[str, dict[str, float | int | bool]]
     local_path: str
     s3_uri: str | None
+    report_local_path: str
+    report_s3_uri: str | None
+    chart_local_path: str
+    chart_s3_uri: str | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,9 @@ class ForecastBatchResult:
     generated_at_utc: str
     manifest_local_path: str
     manifest_s3_uri: str | None
+    unified_report_local_path: str
+    unified_latest_report_local_path: str
+    unified_report_s3_uri: str | None
     assets: tuple[ForecastAssetArtifact, ...]
 
     def to_manifest(self) -> dict[str, Any]:
@@ -100,6 +115,9 @@ class ForecastBatchResult:
             "generated_at_utc": self.generated_at_utc,
             "manifest_local_path": self.manifest_local_path,
             "manifest_s3_uri": self.manifest_s3_uri,
+            "unified_report_local_path": self.unified_report_local_path,
+            "unified_latest_report_local_path": self.unified_latest_report_local_path,
+            "unified_report_s3_uri": self.unified_report_s3_uri,
             "asset_count": len(self.assets),
             "assets": [asdict(asset) for asset in self.assets],
         }
@@ -200,7 +218,10 @@ class GenerateForecastBatchUseCase:
                 quantum_payload = json.loads(
                     Path(str(quantum_metadata["model_local_path"])).read_text(encoding="utf-8")
                 )
-                quantum_model = self._build_quantum_predictor(quantum_payload)
+                quantum_model = self._build_quantum_predictor(
+                    model_payload=quantum_payload,
+                    request=request,
+                )
                 combined_rows.extend(
                     self._build_quantum_rows(
                         raw_frame=raw_frame,
@@ -220,6 +241,7 @@ class GenerateForecastBatchUseCase:
             future_predict_frame = future_predict_frame.sort_values(
                 by=["forecast_step", "predict_type"],
             ).reset_index(drop=True)
+            forecast_summary = self._summarize_future_predict_frame(future_predict_frame)
 
             relative_path = self._build_future_predict_relative_path(
                 source=request.source,
@@ -237,7 +259,38 @@ class GenerateForecastBatchUseCase:
                     relative_path=relative_path,
                 )
 
+            chart_relative_path = relative_path.with_name("forecast_chart.svg")
+            chart_local_path = self._write_forecast_chart(
+                frame=future_predict_frame,
+                relative_path=chart_relative_path,
+                symbol=symbol,
+            )
+            chart_s3_uri = None
+            if request.upload_to_s3 and self._s3_store is not None:
+                chart_s3_uri = self._s3_store.upload_file(
+                    local_path=chart_local_path,
+                    relative_path=chart_relative_path,
+                )
+
             forecast_dates = pd.to_datetime(future_predict_frame["forecast_date"])
+            report_relative_path = relative_path.with_name("forecast_report.md")
+            report_local_path = self._write_forecast_report(
+                frame=future_predict_frame,
+                relative_path=report_relative_path,
+                symbol=symbol,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                forecast_summary=forecast_summary,
+                normal_model_local_path=normal_model_local_path,
+                quantum_model_local_path=quantum_model_local_path,
+                chart_local_path=chart_local_path,
+            )
+            report_s3_uri = None
+            if request.upload_to_s3 and self._s3_store is not None:
+                report_s3_uri = self._s3_store.upload_file(
+                    local_path=report_local_path,
+                    relative_path=report_relative_path,
+                )
             artifacts.append(
                 ForecastAssetArtifact(
                     symbol=symbol.upper(),
@@ -251,14 +304,46 @@ class GenerateForecastBatchUseCase:
                     ),
                     normal_model_local_path=normal_model_local_path,
                     quantum_model_local_path=quantum_model_local_path,
+                    forecast_summary=forecast_summary,
                     local_path=str(local_path),
                     s3_uri=s3_uri,
+                    report_local_path=str(report_local_path),
+                    report_s3_uri=report_s3_uri,
+                    chart_local_path=str(chart_local_path),
+                    chart_s3_uri=chart_s3_uri,
                 )
+            )
+
+        unified_report_relative_path = self._build_unified_report_relative_path(
+            extraction_date=request.extraction_date,
+            generated_at_token=generated_at_token,
+        )
+        unified_report_local_path = self._write_unified_forecast_report(
+            relative_path=unified_report_relative_path,
+            request=request,
+            generated_at_utc=generated_at_utc,
+            assets=artifacts,
+        )
+        unified_latest_report_relative_path = Path("future_predict") / "unified_forecast_report.md"
+        unified_latest_report_local_path = self._write_unified_forecast_report(
+            relative_path=unified_latest_report_relative_path,
+            request=request,
+            generated_at_utc=generated_at_utc,
+            assets=artifacts,
+        )
+        unified_report_s3_uri = None
+        if request.upload_to_s3 and self._s3_store is not None:
+            unified_report_s3_uri = self._s3_store.upload_file(
+                local_path=unified_report_local_path,
+                relative_path=unified_report_relative_path,
             )
 
         manifest_payload = {
             "source": request.source,
             "generated_at_utc": generated_at_utc,
+            "unified_report_local_path": str(unified_report_local_path),
+            "unified_latest_report_local_path": str(unified_latest_report_local_path),
+            "unified_report_s3_uri": unified_report_s3_uri,
             "request": {
                 "symbols": list(request.symbols),
                 "extraction_date": request.extraction_date.isoformat(),
@@ -295,6 +380,9 @@ class GenerateForecastBatchUseCase:
             generated_at_utc=generated_at_utc,
             manifest_local_path=str(manifest_local_path),
             manifest_s3_uri=manifest_s3_uri,
+            unified_report_local_path=str(unified_report_local_path),
+            unified_latest_report_local_path=str(unified_latest_report_local_path),
+            unified_report_s3_uri=unified_report_s3_uri,
             assets=tuple(artifacts),
         )
 
@@ -325,6 +413,29 @@ class GenerateForecastBatchUseCase:
             raise ValueError("model_name_prefix must not be blank.")
         if request.include_quantum and not request.quantum_model_name_prefix.strip():
             raise ValueError("quantum_model_name_prefix must not be blank.")
+        if request.quantum_runtime_mode not in {"local", "cloud"}:
+            raise ValueError("quantum_runtime_mode must be either 'local' or 'cloud'.")
+        if request.quantum_shots <= 0:
+            raise ValueError("quantum_shots must be greater than zero.")
+        if request.quantum_optimization_level not in {0, 1, 2, 3}:
+            raise ValueError("quantum_optimization_level must be 0, 1, 2, or 3.")
+        if request.max_cloud_quantum_predictions <= 0:
+            raise ValueError("max_cloud_quantum_predictions must be greater than zero.")
+        if request.include_quantum and request.quantum_runtime_mode == "cloud":
+            requested_predictions = len(request.symbols) * request.horizon_days
+            if not request.confirm_ibm_runtime_cost:
+                raise ValueError(
+                    "Cloud quantum prediction requires --confirm-ibm-runtime-cost. "
+                    "Training must stay off IBM Quantum; only forecast inference may "
+                    "submit Runtime jobs."
+                )
+            if requested_predictions > request.max_cloud_quantum_predictions:
+                raise ValueError(
+                    "Refusing to submit "
+                    f"{requested_predictions} cloud quantum predictions. "
+                    "Lower --horizon-days/--symbols or raise "
+                    "--max-cloud-quantum-predictions explicitly."
+                )
 
     def _load_raw_frame(
         self,
@@ -694,6 +805,11 @@ class GenerateForecastBatchUseCase:
                 recent_window=raw_window.astype(np.float64),
             )
             predicted_close = guardrail.constrained_close
+            horizon_clamped_close, horizon_clamp_applied = self._apply_cumulative_horizon_band(
+                predicted_close=predicted_close,
+                last_observed_close=last_observed_close,
+            )
+            predicted_close = horizon_clamped_close
             predicted_scaled = float(
                 self._scale_array(
                     np.asarray([predicted_close], dtype=np.float32),
@@ -702,6 +818,14 @@ class GenerateForecastBatchUseCase:
                 )[0]
             )
             predicted_direction = int(predicted_close > input_window_end_close)
+            predicted_step_return = self._safe_return(
+                current_value=predicted_close,
+                reference_value=input_window_end_close,
+            )
+            horizon_return = self._safe_return(
+                current_value=predicted_close,
+                reference_value=last_observed_close,
+            )
 
             observed_points_in_window = max(request.lookback - (step - 1), 0)
             predicted_points_in_window = min(step - 1, request.lookback)
@@ -727,9 +851,15 @@ class GenerateForecastBatchUseCase:
                     predicted_scaled=predicted_scaled,
                     predicted_direction=predicted_direction,
                     raw_model_predicted_close=guardrail.raw_model_close,
-                    prediction_constraint_applied=guardrail.applied,
-                    prediction_constraint_method=guardrail.method,
+                    prediction_constraint_applied=guardrail.applied or horizon_clamp_applied,
+                    prediction_constraint_method=self._join_constraint_methods(
+                        guardrail.method,
+                        "cumulative_horizon_return_band" if horizon_clamp_applied else None,
+                    ),
                     prediction_return_cap=guardrail.return_cap,
+                    predicted_step_return=predicted_step_return,
+                    horizon_return_from_last_observed=horizon_return,
+                    price_proxy_return=None,
                     last_observed_date=last_observed_date,
                     last_observed_close=last_observed_close,
                     input_window_start_date=input_window_start_date,
@@ -808,9 +938,31 @@ class GenerateForecastBatchUseCase:
                 transformed_values=transformed_vector,
             )
             proxy_return = self._compute_quantum_price_proxy_return(raw_window)
-            predicted_close = float(
+            raw_proxy_close = float(
                 input_window_end_close
                 * (1.0 + proxy_return if predicted_direction == 1 else 1.0 - proxy_return)
+            )
+            guardrail = apply_standard_forecast_guardrail(
+                raw_model_close=raw_proxy_close,
+                current_close=input_window_end_close,
+                recent_window=raw_window.astype(np.float64),
+                volatility_multiplier=2.0,
+                max_return_cap=0.05,
+            )
+            predicted_close = guardrail.constrained_close
+            horizon_clamped_close, horizon_clamp_applied = self._apply_cumulative_horizon_band(
+                predicted_close=predicted_close,
+                last_observed_close=last_observed_close,
+            )
+            predicted_close = horizon_clamped_close
+            predicted_direction = int(predicted_close > input_window_end_close)
+            predicted_step_return = self._safe_return(
+                current_value=predicted_close,
+                reference_value=input_window_end_close,
+            )
+            horizon_return = self._safe_return(
+                current_value=predicted_close,
+                reference_value=last_observed_close,
             )
 
             observed_points_in_window = max(request.lookback - (step - 1), 0)
@@ -836,10 +988,16 @@ class GenerateForecastBatchUseCase:
                     predicted_close=predicted_close,
                     predicted_scaled=None,
                     predicted_direction=predicted_direction,
-                    raw_model_predicted_close=None,
-                    prediction_constraint_applied=False,
-                    prediction_constraint_method=None,
-                    prediction_return_cap=None,
+                    raw_model_predicted_close=raw_proxy_close,
+                    prediction_constraint_applied=guardrail.applied or horizon_clamp_applied,
+                    prediction_constraint_method=self._join_constraint_methods(
+                        guardrail.method,
+                        "cumulative_horizon_return_band" if horizon_clamp_applied else None,
+                    ),
+                    prediction_return_cap=guardrail.return_cap,
+                    predicted_step_return=predicted_step_return,
+                    horizon_return_from_last_observed=horizon_return,
+                    price_proxy_return=proxy_return,
                     last_observed_date=last_observed_date,
                     last_observed_close=last_observed_close,
                     input_window_start_date=input_window_start_date,
@@ -862,8 +1020,16 @@ class GenerateForecastBatchUseCase:
 
         return rows
 
-    def _build_quantum_predictor(self, model_payload: dict[str, Any]) -> VQC:
-        runtime_context = self._build_quantum_runtime_context(model_payload)
+    def _build_quantum_predictor(
+        self,
+        *,
+        model_payload: dict[str, Any],
+        request: ForecastBatchRequest,
+    ) -> VQC:
+        runtime_context = self._build_quantum_runtime_context(
+            model_payload=model_payload,
+            request=request,
+        )
         feature_map = zz_feature_map(
             feature_dimension=int(model_payload["num_qubits"]),
             reps=int(model_payload["feature_map"]["reps"]),
@@ -885,17 +1051,26 @@ class GenerateForecastBatchUseCase:
         )
         return model
 
-    def _build_quantum_runtime_context(self, model_payload: dict[str, Any]) -> dict[str, Any]:
-        execution_mode = str(model_payload.get("execution_mode", "local"))
-        backend_name = str(model_payload.get("backend_name", "fake_manila"))
+    def _build_quantum_runtime_context(
+        self,
+        *,
+        model_payload: dict[str, Any],
+        request: ForecastBatchRequest,
+    ) -> dict[str, Any]:
+        execution_mode = request.quantum_runtime_mode
+        backend_name = request.quantum_backend_name or str(
+            model_payload.get("backend_name", "fake_manila")
+        )
+        if execution_mode == "cloud" and backend_name.startswith("fake_"):
+            backend_name = ""
 
-        if execution_mode == "local" or backend_name.startswith("fake_"):
+        if execution_mode == "local":
             backend = FakeManilaV2()
             sampler = Sampler(mode=backend, options={"simulator": {"seed_simulator": 42}})
-            sampler.options.default_shots = 1024
+            sampler.options.default_shots = request.quantum_shots
             pass_manager = generate_preset_pass_manager(
                 backend=backend,
-                optimization_level=1,
+                optimization_level=request.quantum_optimization_level,
             )
             return {
                 "backend": backend,
@@ -904,12 +1079,15 @@ class GenerateForecastBatchUseCase:
             }
 
         service = self._build_cloud_service()
-        backend = service.backend(backend_name)
+        backend = service.backend(backend_name) if backend_name else service.least_busy(
+            operational=True,
+            simulator=False,
+        )
         sampler = Sampler(mode=backend)
-        sampler.options.default_shots = 1024
+        sampler.options.default_shots = request.quantum_shots
         pass_manager = generate_preset_pass_manager(
             backend=backend,
-            optimization_level=1,
+            optimization_level=request.quantum_optimization_level,
         )
         return {
             "backend": backend,
@@ -1040,7 +1218,493 @@ class GenerateForecastBatchUseCase:
 
         effective_periods = min(10, len(daily_returns))
         proxy_return = float(np.mean(np.abs(daily_returns[-effective_periods:])))
-        return min(max(proxy_return, 0.0025), 0.15)
+        return min(max(proxy_return, 0.0025), 0.05)
+
+    @staticmethod
+    def _apply_cumulative_horizon_band(
+        *,
+        predicted_close: float,
+        last_observed_close: float,
+        max_cumulative_return: float = 0.35,
+    ) -> tuple[float, bool]:
+        if abs(last_observed_close) <= 1e-8:
+            return float(predicted_close), False
+        lower_bound = max(last_observed_close * (1.0 - max_cumulative_return), 0.0)
+        upper_bound = last_observed_close * (1.0 + max_cumulative_return)
+        constrained = float(np.clip(predicted_close, lower_bound, upper_bound))
+        return constrained, abs(constrained - predicted_close) > 1e-9
+
+    @staticmethod
+    def _safe_return(*, current_value: float, reference_value: float) -> float:
+        if abs(reference_value) <= 1e-8:
+            return 0.0
+        return float(current_value / reference_value - 1.0)
+
+    @staticmethod
+    def _join_constraint_methods(*methods: str | None) -> str | None:
+        active_methods = [method for method in methods if method]
+        return "+".join(active_methods) if active_methods else None
+
+    @staticmethod
+    def _summarize_future_predict_frame(
+        frame: pd.DataFrame,
+    ) -> dict[str, dict[str, float | int | bool]]:
+        summary: dict[str, dict[str, float | int | bool]] = {}
+        if frame.empty:
+            return summary
+        for predict_type, group in frame.groupby("predict_type"):
+            ordered = group.sort_values("forecast_step")
+            directions = ordered["predicted_direction"].astype(int)
+            closes = ordered["predicted_close"].astype(float)
+            last_observed_close = float(ordered["last_observed_close"].iloc[0])
+            horizon_delta = (
+                float(closes.iloc[-1] / last_observed_close - 1.0)
+                if abs(last_observed_close) > 1e-8
+                else 0.0
+            )
+            step_returns = ordered["predicted_step_return"].astype(float)
+            up_rate = float(directions.mean()) if len(directions) else 0.0
+            summary[str(predict_type)] = {
+                "row_count": int(len(ordered.index)),
+                "up_rate": up_rate,
+                "up_count": int(directions.sum()),
+                "down_count": int((1 - directions).sum()),
+                "horizon_delta_pct": float(horizon_delta * 100.0),
+                "mean_abs_step_return_pct": float(step_returns.abs().mean() * 100.0),
+                "std_step_return_pct": float(step_returns.std(ddof=0) * 100.0),
+                "constraint_applied_count": int(
+                    ordered["prediction_constraint_applied"].astype(bool).sum()
+                ),
+                "degenerate_direction_path": bool(up_rate <= 0.05 or up_rate >= 0.95),
+                "uses_price_proxy": bool(ordered["is_price_proxy"].astype(bool).any()),
+            }
+        return summary
+
+    def _write_forecast_report(
+        self,
+        *,
+        frame: pd.DataFrame,
+        relative_path: Path,
+        symbol: str,
+        request: ForecastBatchRequest,
+        generated_at_utc: str,
+        forecast_summary: dict[str, dict[str, float | int | bool]],
+        normal_model_local_path: str | None,
+        quantum_model_local_path: str | None,
+        chart_local_path: Path,
+    ) -> Path:
+        destination = self._local_store.root_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            self._build_forecast_report_markdown(
+                frame=frame,
+                symbol=symbol,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                forecast_summary=forecast_summary,
+                normal_model_local_path=normal_model_local_path,
+                quantum_model_local_path=quantum_model_local_path,
+                chart_local_path=chart_local_path,
+            ),
+            encoding="utf-8",
+        )
+        return destination
+
+    def _write_forecast_chart(
+        self,
+        *,
+        frame: pd.DataFrame,
+        relative_path: Path,
+        symbol: str,
+    ) -> Path:
+        destination = self._local_store.root_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            self._build_forecast_chart_svg(frame=frame, symbol=symbol),
+            encoding="utf-8",
+        )
+        return destination
+
+    def _write_unified_forecast_report(
+        self,
+        *,
+        relative_path: Path,
+        request: ForecastBatchRequest,
+        generated_at_utc: str,
+        assets: list[ForecastAssetArtifact],
+    ) -> Path:
+        destination = self._local_store.root_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            self._build_unified_forecast_report_markdown(
+                destination=destination,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                assets=assets,
+            ),
+            encoding="utf-8",
+        )
+        return destination
+
+    def _build_forecast_report_markdown(
+        self,
+        *,
+        frame: pd.DataFrame,
+        symbol: str,
+        request: ForecastBatchRequest,
+        generated_at_utc: str,
+        forecast_summary: dict[str, dict[str, float | int | bool]],
+        normal_model_local_path: str | None,
+        quantum_model_local_path: str | None,
+        chart_local_path: Path,
+    ) -> str:
+        ordered = frame.sort_values(["predict_type", "forecast_step"]).reset_index(drop=True)
+        last_observed_date = str(ordered["last_observed_date"].iloc[0])
+        last_observed_close = float(ordered["last_observed_close"].iloc[0])
+        forecast_start = str(ordered["forecast_date"].min())
+        forecast_end = str(ordered["forecast_date"].max())
+        summary_table = self._build_forecast_summary_table(forecast_summary)
+        warning_lines = self._build_forecast_warning_lines(forecast_summary)
+        endpoint_table = self._build_forecast_endpoint_table(ordered)
+
+        return f"""# Forecast Report - `{symbol.upper()}`
+
+> **Extraction date:** `{request.extraction_date.isoformat()}`
+> **Generated at (UTC):** `{generated_at_utc}`
+> **Forecast window:** `{forecast_start}` -> `{forecast_end}`
+> **Last observed:** `{last_observed_date}` close=`{last_observed_close:.4f}`
+> **Horizon days:** `{request.horizon_days}`
+
+---
+
+## Executive Summary
+
+{summary_table}
+
+{warning_lines}
+
+---
+
+## Endpoint Check
+
+{endpoint_table}
+
+---
+
+## Forecast Chart
+
+![Forecast chart]({chart_local_path.name})
+
+---
+
+## Methodology Notes
+
+- `normal` rows are recursive Keras LSTM price-regression forecasts with per-step volatility guardrails.
+- `quant` rows are VQC direction-classifier outputs converted into prices using a recent-volatility proxy; they are not direct price-regression outputs.
+- `price_proxy_return` records the magnitude used by the quantum proxy before guardrail and cumulative-band effects.
+- `predicted_step_return` measures the model-implied move versus the previous forecast window endpoint.
+- `horizon_return_from_last_observed` measures cumulative drift versus the last observed close.
+- `prediction_constraint_applied` indicates per-step or cumulative guardrails changed the raw output.
+
+---
+
+## Model Inputs
+
+| Field | Value |
+|---|---|
+| Source | `{request.source}` |
+| Target column | `{request.target_column}` |
+| Lookback | `{request.lookback}` |
+| Normal model | `{normal_model_local_path or "not generated"}` |
+| Quantum model | `{quantum_model_local_path or "not generated"}` |
+| Quantum runtime mode | `{request.quantum_runtime_mode}` |
+| Quantum shots | `{request.quantum_shots}` |
+
+---
+
+*Forecast report generated automatically by the forecast pipeline.*
+"""
+
+    def _build_unified_forecast_report_markdown(
+        self,
+        *,
+        destination: Path,
+        request: ForecastBatchRequest,
+        generated_at_utc: str,
+        assets: list[ForecastAssetArtifact],
+    ) -> str:
+        summary_rows = [
+            "| Symbol | Rows | Types | Window | Last observed | Report | Dataset | Chart |",
+            "|---|---:|---|---|---:|---|---|---|",
+        ]
+        sections: list[str] = []
+        for asset in sorted(assets, key=lambda item: item.symbol):
+            report_path = Path(asset.report_local_path)
+            dataset_path = Path(asset.local_path)
+            chart_path = Path(asset.chart_local_path)
+            summary_rows.append(
+                "| "
+                f"{asset.symbol} | "
+                f"{asset.row_count} | "
+                f"{', '.join(asset.predict_types)} | "
+                f"{asset.forecast_start_date} -> {asset.forecast_end_date} | "
+                f"{asset.last_observed_close:.4f} | "
+                f"{self._markdown_path_link(destination=destination, target=report_path, label='report')} | "
+                f"{self._markdown_path_link(destination=destination, target=dataset_path, label='parquet')} | "
+                f"{self._markdown_path_link(destination=destination, target=chart_path, label='svg')} |"
+            )
+            sections.append(
+                self._build_unified_asset_section(
+                    destination=destination,
+                    asset=asset,
+                )
+            )
+
+        return f"""# Unified Forecast Report
+
+> **Extraction date:** `{request.extraction_date.isoformat()}`
+> **Generated at (UTC):** `{generated_at_utc}`
+> **Source:** `{request.source}`
+> **Lookback:** `{request.lookback}`
+> **Horizon days:** `{request.horizon_days}`
+> **Quantum runtime mode:** `{request.quantum_runtime_mode}`
+
+---
+
+## Run Summary
+
+{chr(10).join(summary_rows)}
+
+---
+
+{chr(10).join(sections)}
+
+*Unified forecast report generated automatically under `data/processed/future_predict`.*
+"""
+
+    def _build_unified_asset_section(
+        self,
+        *,
+        destination: Path,
+        asset: ForecastAssetArtifact,
+    ) -> str:
+        summary_table = self._build_forecast_summary_table(asset.forecast_summary)
+        chart_markdown = self._markdown_image(
+            destination=destination,
+            target=Path(asset.chart_local_path),
+            alt=f"{asset.symbol} forecast chart",
+        )
+        report_link = self._markdown_path_link(
+            destination=destination,
+            target=Path(asset.report_local_path),
+            label="detailed report",
+        )
+        dataset_link = self._markdown_path_link(
+            destination=destination,
+            target=Path(asset.local_path),
+            label="future_predict parquet",
+        )
+        normal_model = self._format_markdown_path_or_empty(
+            destination=destination,
+            target=asset.normal_model_local_path,
+        )
+        quantum_model = self._format_markdown_path_or_empty(
+            destination=destination,
+            target=asset.quantum_model_local_path,
+        )
+
+        return f"""## {asset.symbol}
+
+{summary_table}
+
+{chart_markdown}
+
+| Item | Value |
+|---|---|
+| Detailed report | {report_link} |
+| Dataset | {dataset_link} |
+| Normal model | {normal_model} |
+| Quantum model | {quantum_model} |
+| Last observed date | `{asset.last_observed_date}` |
+| Last observed close | `{asset.last_observed_close:.4f}` |
+
+---
+"""
+
+    @staticmethod
+    def _build_forecast_chart_svg(*, frame: pd.DataFrame, symbol: str) -> str:
+        width, height = 920, 420
+        left, right, top, bottom = 70, 32, 48, 62
+        plot_width = width - left - right
+        plot_height = height - top - bottom
+        ordered = frame.sort_values(["predict_type", "forecast_step"])
+        values = ordered["predicted_close"].astype(float).to_list()
+        if not values:
+            return GenerateForecastBatchUseCase._empty_svg(
+                f"{symbol.upper()} Forecast",
+                "No forecast values available.",
+            )
+        y_min = min(values)
+        y_max = max(values)
+        if y_min == y_max:
+            y_min -= 1.0
+            y_max += 1.0
+        padding = (y_max - y_min) * 0.08
+        y_min -= padding
+        y_max += padding
+        max_step = max(int(value) for value in ordered["forecast_step"].to_list())
+        colors = {"normal": "#1f77b4", "quant": "#d62728"}
+
+        def x_for(step: int) -> float:
+            denominator = max(max_step - 1, 1)
+            return left + ((step - 1) / denominator) * plot_width
+
+        def y_for(value: float) -> float:
+            return top + ((y_max - value) / (y_max - y_min)) * plot_height
+
+        polylines: list[str] = []
+        legend: list[str] = []
+        for index, (predict_type, group) in enumerate(ordered.groupby("predict_type")):
+            group = group.sort_values("forecast_step")
+            points = " ".join(
+                f"{x_for(int(row.forecast_step)):.1f},{y_for(float(row.predicted_close)):.1f}"
+                for row in group.itertuples(index=False)
+            )
+            color = colors.get(str(predict_type), "#2ca02c")
+            polylines.append(
+                f'<polyline points="{points}" fill="none" stroke="{color}" '
+                'stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" />'
+            )
+            legend_y = 76 + index * 22
+            legend.append(
+                f'<rect x="758" y="{legend_y - 10}" width="12" height="12" fill="{color}" />'
+                f'<text x="776" y="{legend_y}" font-size="13">{escape(str(predict_type))}</text>'
+            )
+
+        y_ticks = []
+        for tick in range(5):
+            value = y_min + ((y_max - y_min) * tick / 4)
+            y = y_for(value)
+            y_ticks.append(
+                f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#e5e7eb" />'
+                f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" font-size="11">{value:.4g}</text>'
+            )
+
+        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="{left}" y="28" font-size="20" font-weight="700">{escape(symbol.upper())} Forecast Path</text>
+<text x="{left}" y="{height - 18}" font-size="12">Forecast step</text>
+<text x="18" y="{top + plot_height / 2:.1f}" font-size="12" transform="rotate(-90 18 {top + plot_height / 2:.1f})">Predicted close</text>
+{''.join(y_ticks)}
+<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="#111827" />
+<line x1="{left}" y1="{top + plot_height}" x2="{width - right}" y2="{top + plot_height}" stroke="#111827" />
+{''.join(polylines)}
+{''.join(legend)}
+</svg>
+"""
+
+    @staticmethod
+    def _empty_svg(title: str, message: str) -> str:
+        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="260" viewBox="0 0 840 260">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="42" y="42" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="42" y="92" font-size="14">{escape(message)}</text>
+</svg>
+"""
+
+    @staticmethod
+    def _markdown_path_link(*, destination: Path, target: Path, label: str) -> str:
+        relative = os.path.relpath(target, start=destination.parent).replace("\\", "/")
+        return f"[{label}]({relative})"
+
+    @staticmethod
+    def _markdown_image(*, destination: Path, target: Path, alt: str) -> str:
+        relative = os.path.relpath(target, start=destination.parent).replace("\\", "/")
+        return f"![{alt}]({relative})"
+
+    def _format_markdown_path_or_empty(
+        self,
+        *,
+        destination: Path,
+        target: str | None,
+    ) -> str:
+        if not target:
+            return "`not generated`"
+        path = Path(target)
+        if path.suffix.lower() == ".svg":
+            return self._markdown_image(destination=destination, target=path, alt=path.stem)
+        return self._markdown_path_link(destination=destination, target=path, label=path.name)
+
+    @staticmethod
+    def _build_forecast_summary_table(
+        forecast_summary: dict[str, dict[str, float | int | bool]],
+    ) -> str:
+        lines = [
+            "| Type | Rows | Up rate | Up/Down | Horizon delta | Mean abs step return | Step return std | Constraints | Degenerate | Price proxy |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        ]
+        for predict_type, payload in sorted(forecast_summary.items()):
+            lines.append(
+                "| "
+                f"{predict_type} | "
+                f"{int(payload['row_count'])} | "
+                f"{float(payload['up_rate']):.1%} | "
+                f"{int(payload['up_count'])}/{int(payload['down_count'])} | "
+                f"{float(payload['horizon_delta_pct']):+.2f}% | "
+                f"{float(payload['mean_abs_step_return_pct']):.3f}% | "
+                f"{float(payload['std_step_return_pct']):.3f}% | "
+                f"{int(payload['constraint_applied_count'])} | "
+                f"{'yes' if bool(payload['degenerate_direction_path']) else 'no'} | "
+                f"{'yes' if bool(payload['uses_price_proxy']) else 'no'} |"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_forecast_warning_lines(
+        forecast_summary: dict[str, dict[str, float | int | bool]],
+    ) -> str:
+        warnings: list[str] = []
+        for predict_type, payload in sorted(forecast_summary.items()):
+            if bool(payload["degenerate_direction_path"]):
+                warnings.append(
+                    f"- `{predict_type}` has a degenerate direction path "
+                    f"(Up rate {float(payload['up_rate']):.1%})."
+                )
+            if abs(float(payload["horizon_delta_pct"])) >= 30.0:
+                warnings.append(
+                    f"- `{predict_type}` cumulative horizon move is large "
+                    f"({float(payload['horizon_delta_pct']):+.2f}%)."
+                )
+            if int(payload["constraint_applied_count"]) > 0:
+                warnings.append(
+                    f"- `{predict_type}` had {int(payload['constraint_applied_count'])} "
+                    "guardrail-constrained forecast rows."
+                )
+        if not warnings:
+            return "No forecast stability warnings were triggered."
+        return "\n".join(["### Forecast Warnings", "", *warnings])
+
+    @staticmethod
+    def _build_forecast_endpoint_table(frame: pd.DataFrame) -> str:
+        lines = [
+            "| Type | First date | First close | Last date | Last close | Last horizon return | Last direction |",
+            "|---|---|---:|---|---:|---:|---|",
+        ]
+        for predict_type, group in frame.groupby("predict_type"):
+            ordered = group.sort_values("forecast_step")
+            first = ordered.iloc[0]
+            last = ordered.iloc[-1]
+            lines.append(
+                "| "
+                f"{predict_type} | "
+                f"{first['forecast_date']} | "
+                f"{float(first['predicted_close']):.4f} | "
+                f"{last['forecast_date']} | "
+                f"{float(last['predicted_close']):.4f} | "
+                f"{float(last['horizon_return_from_last_observed']) * 100.0:+.2f}% | "
+                f"{last['predicted_direction_label']} |"
+            )
+        return "\n".join(lines)
 
     @classmethod
     def _score_regression_asset(
@@ -1104,6 +1768,9 @@ class GenerateForecastBatchUseCase:
         prediction_constraint_applied: bool,
         prediction_constraint_method: str | None,
         prediction_return_cap: float | None,
+        predicted_step_return: float,
+        horizon_return_from_last_observed: float,
+        price_proxy_return: float | None,
         last_observed_date: pd.Timestamp,
         last_observed_close: float,
         input_window_start_date: pd.Timestamp,
@@ -1147,6 +1814,11 @@ class GenerateForecastBatchUseCase:
             "prediction_constraint_method": prediction_constraint_method,
             "prediction_return_cap": (
                 float(prediction_return_cap) if prediction_return_cap is not None else None
+            ),
+            "predicted_step_return": float(predicted_step_return),
+            "horizon_return_from_last_observed": float(horizon_return_from_last_observed),
+            "price_proxy_return": (
+                float(price_proxy_return) if price_proxy_return is not None else None
             ),
             "last_observed_date": last_observed_date.strftime("%Y-%m-%d"),
             "last_observed_close": float(last_observed_close),
@@ -1200,6 +1872,19 @@ class GenerateForecastBatchUseCase:
             / f"extraction_date={extraction_date.isoformat()}"
             / f"generated_at={generated_at_token}"
             / "future_predict.parquet"
+        )
+
+    @staticmethod
+    def _build_unified_report_relative_path(
+        *,
+        extraction_date: date,
+        generated_at_token: str,
+    ) -> Path:
+        return (
+            Path("future_predict")
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"generated_at={generated_at_token}"
+            / "unified_forecast_report.md"
         )
 
     @staticmethod

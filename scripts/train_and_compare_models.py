@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -11,22 +11,21 @@ import time
 from typing import Any
 
 
-def _argv_requests_unconfirmed_cloud_run(argv: list[str]) -> bool:
-    """Fast preflight before heavy imports to avoid accidental cloud runs."""
+def _argv_requests_cloud_training(argv: list[str]) -> bool:
+    """Fast preflight before heavy imports to block cloud training."""
     mode_is_cloud = "--quantum-mode=cloud" in argv
     for index, token in enumerate(argv[:-1]):
         if token == "--quantum-mode" and argv[index + 1] == "cloud":
             mode_is_cloud = True
             break
 
-    return mode_is_cloud and "--confirm-ibm-runtime-cost" not in argv
+    return mode_is_cloud
 
 
-if _argv_requests_unconfirmed_cloud_run(sys.argv[1:]):
+if _argv_requests_cloud_training(sys.argv[1:]):
     raise SystemExit(
-        "Refusing to run with --quantum-mode cloud without explicit confirmation.\n"
-        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
-        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+        "Refusing to train/compare with --quantum-mode cloud.\n"
+        "Project policy: IBM Quantum Runtime is reserved for forecast inference only."
     )
 
 import matplotlib
@@ -39,8 +38,10 @@ import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     confusion_matrix,
     f1_score,
+    matthews_corrcoef,
     precision_score,
     recall_score,
 )
@@ -91,7 +92,7 @@ SIMULATOR_DEFAULTS: dict[str, int | str] = {
     "quantum_optimizer_maxiter": 50,
     "quantum_max_train_samples": 128,
     "quantum_max_validation_samples": 64,
-    "quantum_max_test_samples": 64,
+    "quantum_max_test_samples": 0,
     "quantum_optimization_level": 1,
 }
 
@@ -122,9 +123,19 @@ MODE_DEFAULTS: dict[str, dict[str, int | str]] = {
 class DirectionComparisonMetrics:
     sample_count: int
     accuracy: float
+    accuracy_ci95_low: float
+    accuracy_ci95_high: float
+    binomial_p_value: float
     precision: float
     recall: float
     f1: float
+    macro_f1: float
+    balanced_accuracy: float
+    mcc: float
+    actual_positive_rate: float
+    predicted_positive_rate: float
+    segment_accuracy_std: float
+    degenerate_prediction: bool
     confusion_matrix: dict[str, int]
 
 
@@ -157,6 +168,8 @@ class ComparisonAssetArtifact:
     keras_direction_metrics: DirectionComparisonMetrics
     quantum_direction_metrics: DirectionComparisonMetrics
     dummy_direction_metrics: DirectionComparisonMetrics
+    always_down_direction_metrics: DirectionComparisonMetrics
+    stratified_random_direction_metrics: DirectionComparisonMetrics
     quantum_execution_mode: str
     quantum_backend_name: str
     quantum_shots: int
@@ -168,6 +181,7 @@ class ComparisonAssetArtifact:
     quantum_train_samples: int
     quantum_validation_samples: int
     quantum_test_samples: int
+    original_test_samples: int
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +308,7 @@ def parse_args() -> argparse.Namespace:
         "--quantum-max-test-samples",
         type=int,
         default=None,
-        help="Test samples. Default: 64 (local) / 16 (cloud).",
+        help="Test samples. Use 0 for the full test split. Default: full split (local) / 16 (cloud).",
     )
 
     # --- output ---
@@ -303,6 +317,14 @@ def parse_args() -> argparse.Namespace:
         "--skip-s3",
         action="store_true",
         help="Only persist trained model and comparison artifacts locally; skip S3 upload.",
+    )
+    parser.add_argument(
+        "--allow-local-quantum-training",
+        action="store_true",
+        help=(
+            "Explicit escape hatch for local simulator VQC training inside the "
+            "comparison report. IBM Quantum cloud training remains blocked."
+        ),
     )
 
     return parser.parse_args()
@@ -319,14 +341,16 @@ def apply_quantum_mode_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def require_ibm_runtime_confirmation(args: argparse.Namespace) -> None:
-    """Prevent accidental IBM Quantum hardware submissions."""
-    if args.quantum_mode != "cloud" or args.confirm_ibm_runtime_cost:
+    """Prevent accidental IBM Quantum hardware submissions during training."""
+    if args.quantum_mode != "cloud":
         return
 
     raise SystemExit(
-        "Refusing to run with --quantum-mode cloud without explicit confirmation.\n"
-        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
-        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+        "Refusing to train/compare with --quantum-mode cloud.\n"
+        "Project policy: IBM Quantum Runtime is reserved for forecast inference "
+        "only. Run comparison with --quantum-mode local, then use "
+        "`scripts/generate_forecast.py --quantum-runtime-mode cloud` for a "
+        "controlled prediction run."
     )
 
 
@@ -460,14 +484,33 @@ def compute_direction_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> DirectionComparisonMetrics:
+    y_true = np.asarray(y_true).reshape(-1).astype(int)
+    y_pred = np.asarray(y_pred).reshape(-1).astype(int)
     matrix = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = matrix.ravel()
+    sample_count = int(len(y_true))
+    accuracy = float(accuracy_score(y_true, y_pred)) if sample_count else 0.0
+    ci_low, ci_high = _wilson_interval(successes=int(tn + tp), n=sample_count)
+    predicted_positive_rate = float(np.mean(y_pred)) if sample_count else 0.0
+    actual_positive_rate = float(np.mean(y_true)) if sample_count else 0.0
     return DirectionComparisonMetrics(
-        sample_count=int(len(y_true)),
-        accuracy=float(accuracy_score(y_true, y_pred)),
+        sample_count=sample_count,
+        accuracy=accuracy,
+        accuracy_ci95_low=ci_low,
+        accuracy_ci95_high=ci_high,
+        binomial_p_value=_two_sided_binomial_p_value(successes=int(tn + tp), n=sample_count),
         precision=float(precision_score(y_true, y_pred, zero_division=0)),
         recall=float(recall_score(y_true, y_pred, zero_division=0)),
         f1=float(f1_score(y_true, y_pred, zero_division=0)),
+        macro_f1=float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        balanced_accuracy=float(balanced_accuracy_score(y_true, y_pred)),
+        mcc=float(matthews_corrcoef(y_true, y_pred)) if np.unique(y_pred).size > 1 else 0.0,
+        actual_positive_rate=actual_positive_rate,
+        predicted_positive_rate=predicted_positive_rate,
+        segment_accuracy_std=_segment_accuracy_std(y_true=y_true, y_pred=y_pred),
+        degenerate_prediction=(
+            sample_count > 0 and (predicted_positive_rate <= 0.05 or predicted_positive_rate >= 0.95)
+        ),
         confusion_matrix={
             "tn": int(tn),
             "fp": int(fp),
@@ -475,6 +518,50 @@ def compute_direction_metrics(
             "tp": int(tp),
         },
     )
+
+
+def _wilson_interval(*, successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    if n <= 0:
+        return 0.0, 0.0
+    p_hat = successes / n
+    denominator = 1.0 + z**2 / n
+    centre = p_hat + z**2 / (2.0 * n)
+    margin = z * np.sqrt((p_hat * (1.0 - p_hat) + z**2 / (4.0 * n)) / n)
+    return float((centre - margin) / denominator), float((centre + margin) / denominator)
+
+
+def _two_sided_binomial_p_value(*, successes: int, n: int, p: float = 0.5) -> float:
+    if n <= 0:
+        return 1.0
+    observed_probability = _binomial_probability(successes=successes, n=n, p=p)
+    total = 0.0
+    for candidate_successes in range(n + 1):
+        probability = _binomial_probability(successes=candidate_successes, n=n, p=p)
+        if probability <= observed_probability + 1e-15:
+            total += probability
+    return float(min(total, 1.0))
+
+
+def _binomial_probability(*, successes: int, n: int, p: float) -> float:
+    from math import comb
+
+    return float(comb(n, successes) * (p ** successes) * ((1.0 - p) ** (n - successes)))
+
+
+def _segment_accuracy_std(
+    *,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    segments: int = 5,
+) -> float:
+    if len(y_true) < segments * 2:
+        return 0.0
+    accuracies: list[float] = []
+    for indices in np.array_split(np.arange(len(y_true)), segments):
+        if len(indices) == 0:
+            continue
+        accuracies.append(float(accuracy_score(y_true[indices], y_pred[indices])))
+    return float(np.std(accuracies)) if len(accuracies) > 1 else 0.0
 
 
 def limit_direction_samples(
@@ -485,7 +572,7 @@ def limit_direction_samples(
     max_samples: int,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
-    if len(X) == 0 or len(X) <= max_samples:
+    if max_samples <= 0 or len(X) == 0 or len(X) <= max_samples:
         return X, y, frame.copy()
 
     from sklearn.model_selection import train_test_split
@@ -618,6 +705,11 @@ def build_directional_lstm_dataset(
             "validation": int(len(X_validation)),
             "test": int(len(X_test)),
         },
+        "original_counts": {
+            "train": int((split == "train").sum()),
+            "validation": int((split == "validation").sum()),
+            "test": int((split == "test").sum()),
+        },
     }
 
 
@@ -741,6 +833,46 @@ def build_always_up_baseline_metrics(*, y_test: np.ndarray) -> DirectionComparis
     )
 
 
+def build_always_down_baseline_metrics(*, y_test: np.ndarray) -> DirectionComparisonMetrics:
+    return compute_direction_metrics(
+        y_true=y_test,
+        y_pred=np.zeros_like(y_test, dtype=int),
+    )
+
+
+def build_stratified_random_baseline_metrics(
+    *,
+    y_test: np.ndarray,
+    seed: int,
+) -> DirectionComparisonMetrics:
+    positive_rate = float(np.mean(y_test)) if len(y_test) else 0.5
+    rng = np.random.default_rng(seed)
+    predictions = (rng.random(len(y_test)) < positive_rate).astype(int)
+    return compute_direction_metrics(y_true=y_test, y_pred=predictions)
+
+
+def direction_metrics_from_confusion_matrix(
+    *,
+    matrix: dict[str, int],
+) -> DirectionComparisonMetrics:
+    y_true = np.concatenate(
+        [
+            np.zeros(matrix["tn"] + matrix["fp"], dtype=int),
+            np.ones(matrix["fn"] + matrix["tp"], dtype=int),
+        ]
+    )
+    y_pred = np.concatenate(
+        [
+            np.zeros(matrix["tn"], dtype=int),
+            np.ones(matrix["fp"], dtype=int),
+            np.zeros(matrix["fn"], dtype=int),
+            np.ones(matrix["tp"], dtype=int),
+        ]
+    )
+    metrics = compute_direction_metrics(y_true=y_true, y_pred=y_pred)
+    return replace(metrics, segment_accuracy_std=0.0)
+
+
 def build_keras_direction_evaluation(
     *,
     model_path: Path,
@@ -814,6 +946,8 @@ def save_dashboard(
     keras_direction_metrics: DirectionComparisonMetrics,
     quantum_direction_metrics: DirectionComparisonMetrics,
     dummy_direction_metrics: DirectionComparisonMetrics,
+    always_down_direction_metrics: DirectionComparisonMetrics,
+    stratified_random_direction_metrics: DirectionComparisonMetrics,
     price_comparison_frame: pd.DataFrame,
     sample_plot_points: int,
 ) -> None:
@@ -831,36 +965,42 @@ def save_dashboard(
     for index, value in enumerate([keras_seconds, quantum_seconds]):
         axes[0, 0].text(index, value, f"{value:.2f}s", ha="center", va="bottom")
 
-    metric_names = ["Accuracy", "Precision", "Recall", "F1"]
+    metric_names = ["Acc", "Bal Acc", "Macro F1", "MCC"]
     metric_payload = {
         "Keras LSTM": [
             keras_direction_metrics.accuracy,
-            keras_direction_metrics.precision,
-            keras_direction_metrics.recall,
-            keras_direction_metrics.f1,
+            keras_direction_metrics.balanced_accuracy,
+            keras_direction_metrics.macro_f1,
+            keras_direction_metrics.mcc,
         ],
         "Quantum VQC": [
             quantum_direction_metrics.accuracy,
-            quantum_direction_metrics.precision,
-            quantum_direction_metrics.recall,
-            quantum_direction_metrics.f1,
+            quantum_direction_metrics.balanced_accuracy,
+            quantum_direction_metrics.macro_f1,
+            quantum_direction_metrics.mcc,
         ],
         "Always Up": [
             dummy_direction_metrics.accuracy,
-            dummy_direction_metrics.precision,
-            dummy_direction_metrics.recall,
-            dummy_direction_metrics.f1,
+            dummy_direction_metrics.balanced_accuracy,
+            dummy_direction_metrics.macro_f1,
+            dummy_direction_metrics.mcc,
+        ],
+        "Stratified": [
+            stratified_random_direction_metrics.accuracy,
+            stratified_random_direction_metrics.balanced_accuracy,
+            stratified_random_direction_metrics.macro_f1,
+            stratified_random_direction_metrics.mcc,
         ],
     }
     positions = np.arange(len(metric_names))
-    width = 0.25
-    offsets = [-width, 0.0, width]
+    width = 0.20
+    offsets = [-1.5 * width, -0.5 * width, 0.5 * width, 1.5 * width]
     for offset, (label, values) in zip(offsets, metric_payload.items()):
         axes[0, 1].bar(positions + offset, values, width=width, label=label)
     axes[0, 1].set_title("Directional Test Metrics")
     axes[0, 1].set_xticks(positions)
     axes[0, 1].set_xticklabels(metric_names)
-    axes[0, 1].set_ylim(0, 1.05)
+    axes[0, 1].set_ylim(-1.05, 1.05)
     axes[0, 1].legend()
 
     plot_frame = price_comparison_frame.head(sample_plot_points).copy()
@@ -901,6 +1041,13 @@ def save_dashboard(
             f"Keras price MAE: {keras_price_metrics['mae']:.2f}",
             f"Keras price RMSE: {keras_price_metrics['rmse']:.2f}",
             f"Keras price MAPE: {keras_price_metrics['mape']:.2f}%",
+            "",
+            "Inference diagnostics:",
+            f"Keras up-rate: {keras_direction_metrics.predicted_positive_rate:.1%}",
+            f"Quantum up-rate: {quantum_direction_metrics.predicted_positive_rate:.1%}",
+            f"Always down F1: {always_down_direction_metrics.f1:.3f}",
+            f"Stratified random F1: {stratified_random_direction_metrics.f1:.3f}",
+            f"Quantum acc CI95: {quantum_direction_metrics.accuracy_ci95_low:.1%}-{quantum_direction_metrics.accuracy_ci95_high:.1%}",
         ]
     )
     axes[1, 1].text(
@@ -1037,9 +1184,17 @@ def _interpret_direction(metrics: DirectionComparisonMetrics, model_name: str) -
         notes.append(
             "Low recall: many false negatives - the model misses actual upward moves."
         )
-    if metrics.f1 >= 0.60:
+    if metrics.degenerate_prediction:
         notes.append(
-            f"F1 of **{metrics.f1:.2f}** indicates a reasonable balance between precision and recall."
+            f"Degenerate prediction pattern: predicted Up rate is **{metrics.predicted_positive_rate:.1%}**."
+        )
+    if metrics.macro_f1 < 0.50 or metrics.balanced_accuracy < 0.52:
+        notes.append(
+            "Macro F1 / balanced accuracy do not show robust two-class directional skill."
+        )
+    if metrics.f1 >= 0.60 and not metrics.degenerate_prediction:
+        notes.append(
+            f"F1 Up of **{metrics.f1:.2f}** is acceptable only if macro F1, MCC, and baseline comparisons also hold."
         )
 
     return "  \n".join(notes) if notes else "Metrics are within expected range for the test split."
@@ -1188,6 +1343,8 @@ def write_markdown_report(
     keras_direction_metrics: DirectionComparisonMetrics,
     quantum_direction_metrics: DirectionComparisonMetrics,
     dummy_direction_metrics: DirectionComparisonMetrics,
+    always_down_direction_metrics: DirectionComparisonMetrics,
+    stratified_random_direction_metrics: DirectionComparisonMetrics,
     quantum_execution_mode: str,
     quantum_backend_name: str,
     quantum_shots: int,
@@ -1199,6 +1356,7 @@ def write_markdown_report(
     quantum_train_samples: int,
     quantum_validation_samples: int,
     quantum_test_samples: int,
+    original_test_samples: int,
     dashboard_path: Path,
     confusion_chart_path: Path,
 ) -> None:
@@ -1237,6 +1395,8 @@ def write_markdown_report(
     k = keras_direction_metrics
     q = quantum_direction_metrics
     d = dummy_direction_metrics
+    down = always_down_direction_metrics
+    random = stratified_random_direction_metrics
     quantum_methodology_section = _build_quantum_methodology_section(
         execution_mode=quantum_execution_mode,
         backend_name=quantum_backend_name,
@@ -1257,6 +1417,7 @@ def write_markdown_report(
 > **Extraction date:** `{extraction_date.isoformat()}`  
 > **Generated at (UTC):** `{generated_at_utc}`  
 > **Evaluated samples - Keras:** {k.sample_count} | **Quantum:** {q.sample_count}
+> **Original test rows available:** {original_test_samples}
 
 ---
 
@@ -1269,6 +1430,9 @@ def write_markdown_report(
 | Directional accuracy | `{k.accuracy:.1%}` | `{q.accuracy:.1%}` |
 | Training time | `{keras_seconds:.1f} s` | `{quantum_seconds:.1f} s` |
 | Always Up F1 | `{d.f1:.4f}` | baseline |
+| Macro F1 | `{k.macro_f1:.4f}` | `{q.macro_f1:.4f}` |
+| Balanced accuracy | `{k.balanced_accuracy:.4f}` | `{q.balanced_accuracy:.4f}` |
+| MCC | `{k.mcc:.4f}` | `{q.mcc:.4f}` |
 | Price MAE | `{keras_price_metrics["mae"]:.4f}` | n/a |
 
 **Fastest model:** {faster_model} ({speedup:.1f}x faster)  
@@ -1306,16 +1470,22 @@ The separately trained Keras price model performs **direct price regression** fo
 
 ## 3. Directional metrics - side by side
 
-Both learned models and the dummy baseline are evaluated on the same sampled test budget. The dummy baseline always predicts `Up`.
+Both learned models and the baselines are evaluated on the same test budget. In local runs, `quantum_max_test_samples=0` uses the full available test split. The `Always Up` baseline always predicts `Up`; it is useful for detecting class-prior dominance, not as a trading model.
 
-| Metric | Keras LSTM | Quantum VQC | Delta (Keras - Quantum) |
-|---|:---:|:---:|:---:|
-| Accuracy | `{k.accuracy:.4f}` | `{q.accuracy:.4f}` | `{k.accuracy - q.accuracy:+.4f}` |
-| Precision | `{k.precision:.4f}` | `{q.precision:.4f}` | `{k.precision - q.precision:+.4f}` |
-| Recall | `{k.recall:.4f}` | `{q.recall:.4f}` | `{k.recall - q.recall:+.4f}` |
-| F1 | `{k.f1:.4f}` | `{q.f1:.4f}` | `{k.f1 - q.f1:+.4f}` |
-| Always Up F1 | `{d.f1:.4f}` | `{d.f1:.4f}` | baseline |
-| Samples | {k.sample_count} | {q.sample_count} | n/a |
+| Metric | Keras LSTM | Quantum VQC | Always Up | Always Down | Stratified random |
+|---|---:|---:|---:|---:|---:|
+| Accuracy | `{k.accuracy:.4f}` | `{q.accuracy:.4f}` | `{d.accuracy:.4f}` | `{down.accuracy:.4f}` | `{random.accuracy:.4f}` |
+| Accuracy CI95 | `{k.accuracy_ci95_low:.3f}-{k.accuracy_ci95_high:.3f}` | `{q.accuracy_ci95_low:.3f}-{q.accuracy_ci95_high:.3f}` | `{d.accuracy_ci95_low:.3f}-{d.accuracy_ci95_high:.3f}` | `{down.accuracy_ci95_low:.3f}-{down.accuracy_ci95_high:.3f}` | `{random.accuracy_ci95_low:.3f}-{random.accuracy_ci95_high:.3f}` |
+| Binomial p-value vs 50% | `{k.binomial_p_value:.4f}` | `{q.binomial_p_value:.4f}` | `{d.binomial_p_value:.4f}` | `{down.binomial_p_value:.4f}` | `{random.binomial_p_value:.4f}` |
+| Precision Up | `{k.precision:.4f}` | `{q.precision:.4f}` | `{d.precision:.4f}` | `{down.precision:.4f}` | `{random.precision:.4f}` |
+| Recall Up | `{k.recall:.4f}` | `{q.recall:.4f}` | `{d.recall:.4f}` | `{down.recall:.4f}` | `{random.recall:.4f}` |
+| F1 Up | `{k.f1:.4f}` | `{q.f1:.4f}` | `{d.f1:.4f}` | `{down.f1:.4f}` | `{random.f1:.4f}` |
+| Macro F1 | `{k.macro_f1:.4f}` | `{q.macro_f1:.4f}` | `{d.macro_f1:.4f}` | `{down.macro_f1:.4f}` | `{random.macro_f1:.4f}` |
+| Balanced accuracy | `{k.balanced_accuracy:.4f}` | `{q.balanced_accuracy:.4f}` | `{d.balanced_accuracy:.4f}` | `{down.balanced_accuracy:.4f}` | `{random.balanced_accuracy:.4f}` |
+| MCC | `{k.mcc:.4f}` | `{q.mcc:.4f}` | `{d.mcc:.4f}` | `{down.mcc:.4f}` | `{random.mcc:.4f}` |
+| Predicted Up rate | `{k.predicted_positive_rate:.4f}` | `{q.predicted_positive_rate:.4f}` | `{d.predicted_positive_rate:.4f}` | `{down.predicted_positive_rate:.4f}` | `{random.predicted_positive_rate:.4f}` |
+| Segment accuracy std | `{k.segment_accuracy_std:.4f}` | `{q.segment_accuracy_std:.4f}` | `{d.segment_accuracy_std:.4f}` | `{down.segment_accuracy_std:.4f}` | `{random.segment_accuracy_std:.4f}` |
+| Samples | {k.sample_count} | {q.sample_count} | {d.sample_count} | {down.sample_count} | {random.sample_count} |
 
 ### Quick F1 visualisation
 
@@ -1323,8 +1493,17 @@ Both learned models and the dummy baseline are evaluated on the same sampled tes
 Keras LSTM   {_bar(k.f1)}  {k.f1:.2f}
 Quantum VQC  {_bar(q.f1)}  {q.f1:.2f}
 Always Up    {_bar(d.f1)}  {d.f1:.2f}
+Always Down  {_bar(down.f1)}  {down.f1:.2f}
+Stratified   {_bar(random.f1)}  {random.f1:.2f}
              0%                    100%
 ```
+
+### Statistical reliability notes
+
+- Accuracy confidence intervals use a Wilson 95% interval and the p-value is a two-sided binomial test against 50% directional accuracy.
+- High F1 Up with weak macro F1, balanced accuracy, or MCC indicates class-prior exploitation rather than robust directional skill.
+- Predicted Up rates near 0% or 100% are flagged as degenerate forecast behavior.
+- Segment accuracy standard deviation is a lightweight walk-forward stability diagnostic over chronological test blocks when prediction order is available; aggregate-only metrics report 0.0 for this field.
 
 ### Interpretation - Keras LSTM
 
@@ -1402,9 +1581,10 @@ Always Up    {_bar(d.f1)}  {d.f1:.2f}
 | 1 | Use **Keras LSTM** for absolute price forecasting and level-based entry/exit signal generation. |
 | 2 | Treat **Quantum VQC** as an experimental directional model - not a production replacement for Keras yet. |
 | 3 | The fairest apples-to-apples comparison between both approaches is the **directional metrics table** (Section 3). |
-| 4 | For IBM hardware experiments, report backend, queue/runtime metrics, shots, circuit depth, and repeated-run variance. |
-| 5 | If Keras MAPE exceeds 5%, consider adjusting the lookback window or adding volume-based features. |
-| 6 | For the Quantum model, increasing `quantum_max_train_samples` improves generalisation at the cost of training time. |
+| 4 | Treat Quantum price paths as **direction + proxy magnitude**, not direct price forecasts. |
+| 5 | For IBM hardware experiments, report backend, queue/runtime metrics, shots, circuit depth, and repeated-run variance. |
+| 6 | If Keras MAPE exceeds 5%, validate recursive multi-step forecasts before using forecast paths. |
+| 7 | For the Quantum model, increasing `quantum_max_train_samples` can improve generalisation but does not fix the loss of temporal structure from 2-qubit PCA compression. |
 
 ---
 
@@ -1431,26 +1611,31 @@ def _average(values: list[float]) -> float:
 
 def _best_learned_directional_model(asset: ComparisonAssetArtifact) -> str:
     scores = {
-        "Keras LSTM": asset.keras_direction_metrics.f1,
-        "Quantum VQC": asset.quantum_direction_metrics.f1,
+        "Keras LSTM": asset.keras_direction_metrics.mcc,
+        "Quantum VQC": asset.quantum_direction_metrics.mcc,
     }
     return max(scores, key=scores.get)
 
 
 def _baseline_status(asset: ComparisonAssetArtifact) -> str:
-    best_learned_f1 = max(
-        asset.keras_direction_metrics.f1,
-        asset.quantum_direction_metrics.f1,
+    best_learned_mcc = max(
+        asset.keras_direction_metrics.mcc,
+        asset.quantum_direction_metrics.mcc,
     )
-    if asset.dummy_direction_metrics.f1 > best_learned_f1:
+    best_baseline_mcc = max(
+        asset.dummy_direction_metrics.mcc,
+        asset.always_down_direction_metrics.mcc,
+        asset.stratified_random_direction_metrics.mcc,
+    )
+    if best_baseline_mcc > best_learned_mcc:
         return "Baseline higher"
     return "Learned model higher"
 
 
 def _unified_metric_table(assets: list[ComparisonAssetArtifact]) -> str:
     lines = [
-        "| Symbol | Keras F1 | Quantum F1 | Always Up F1 | Keras Acc | Quantum Acc | Always Up Acc | Keras MAPE | Best learned | Baseline check |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        "| Symbol | Keras MCC | Quantum MCC | Keras Macro F1 | Quantum Macro F1 | Keras Up Rate | Quantum Up Rate | Always Up F1 | Keras MAPE | Test n | Best learned | Baseline check |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for asset in assets:
         keras = asset.keras_direction_metrics
@@ -1461,13 +1646,15 @@ def _unified_metric_table(assets: list[ComparisonAssetArtifact]) -> str:
         lines.append(
             "| "
             f"{asset.symbol} | "
-            f"{keras.f1:.4f} | "
-            f"{quantum.f1:.4f} | "
+            f"{keras.mcc:.4f} | "
+            f"{quantum.mcc:.4f} | "
+            f"{keras.macro_f1:.4f} | "
+            f"{quantum.macro_f1:.4f} | "
+            f"{keras.predicted_positive_rate:.4f} | "
+            f"{quantum.predicted_positive_rate:.4f} | "
             f"{dummy.f1:.4f} | "
-            f"{keras.accuracy:.4f} | "
-            f"{quantum.accuracy:.4f} | "
-            f"{dummy.accuracy:.4f} | "
             f"{mape_text} | "
+            f"{asset.quantum_test_samples}/{asset.original_test_samples} | "
             f"{_best_learned_directional_model(asset)} | "
             f"{_baseline_status(asset)} |"
         )
@@ -1525,6 +1712,10 @@ def write_unified_markdown_report(
     keras_f1_values = [asset.keras_direction_metrics.f1 for asset in assets]
     quantum_f1_values = [asset.quantum_direction_metrics.f1 for asset in assets]
     dummy_f1_values = [asset.dummy_direction_metrics.f1 for asset in assets]
+    keras_macro_f1_values = [asset.keras_direction_metrics.macro_f1 for asset in assets]
+    quantum_macro_f1_values = [asset.quantum_direction_metrics.macro_f1 for asset in assets]
+    keras_mcc_values = [asset.keras_direction_metrics.mcc for asset in assets]
+    quantum_mcc_values = [asset.quantum_direction_metrics.mcc for asset in assets]
     keras_time_values = [asset.keras_training_seconds for asset in assets]
     quantum_time_values = [asset.quantum_training_seconds for asset in assets]
     price_mape_values = [
@@ -1556,12 +1747,14 @@ def write_unified_markdown_report(
 
 | Metric | Keras LSTM | Quantum VQC | Always Up |
 |---|---:|---:|---:|
-| Mean directional F1 | `{_average(keras_f1_values):.4f}` | `{_average(quantum_f1_values):.4f}` | `{_average(dummy_f1_values):.4f}` |
+| Mean F1 Up | `{_average(keras_f1_values):.4f}` | `{_average(quantum_f1_values):.4f}` | `{_average(dummy_f1_values):.4f}` |
+| Mean macro F1 | `{_average(keras_macro_f1_values):.4f}` | `{_average(quantum_macro_f1_values):.4f}` | n/a |
+| Mean MCC | `{_average(keras_mcc_values):.4f}` | `{_average(quantum_mcc_values):.4f}` | n/a |
 | Mean training time | `{_average(keras_time_values):.2f} s` | `{_average(quantum_time_values):.2f} s` | n/a |
 | Mean Keras price MAPE | `{_average(price_mape_values):.2f}%` | n/a | n/a |
 
-**Best learned-model F1 counts:** {learned_winner_summary}
-**Symbols where Always Up beats both learned models by F1:** {baseline_higher_count}/{len(assets)}
+**Best learned-model MCC counts:** {learned_winner_summary}
+**Symbols where a simple baseline beats both learned models by MCC:** {baseline_higher_count}/{len(assets)}
 
 This unified report is generated from the per-symbol reports and artifacts produced in the same comparison run. It should be used as the run-level view; the per-symbol reports remain the source for detailed confusion matrices, charts, and methodology notes.
 
@@ -1577,8 +1770,9 @@ This unified report is generated from the per-symbol reports and artifacts produ
 
 - Keras directional metrics come from the binary LSTM classifier trained with `binary_crossentropy` and balanced class weights.
 - Keras price metrics come from the separate price-regression model and are included only as price-forecast context.
-- Quantum VQC and Keras directional evaluation use the same sampled split limits for train, validation, and test.
-- `Always Up` is the honest dummy baseline; learned models should be interpreted cautiously when they do not beat it consistently.
+- Local comparison defaults now use the full test split when `quantum_max_test_samples=0`; cloud runs remain explicitly capped.
+- `Always Up`, `Always Down`, and stratified random baselines are diagnostic baselines; learned models should be interpreted cautiously when they do not beat them on MCC, macro F1, and balanced accuracy.
+- Quantum forecast rows are direction-classifier outputs converted to price with a return proxy; they are not direct price-regression outputs.
 
 ---
 
@@ -1605,6 +1799,13 @@ def main() -> int:
     args = parse_args()
     args = apply_quantum_mode_defaults(args)
     require_ibm_runtime_confirmation(args)
+    if not args.allow_local_quantum_training:
+        raise SystemExit(
+            "Quantum training in comparison runs is disabled by default. "
+            "Project policy: training must stay classical; use quantum only "
+            "during forecast inference. Pass --allow-local-quantum-training "
+            "only for an intentional local simulator comparison."
+        )
 
     settings = TrainingPipelineSettings.from_env()
     upload_to_s3 = not args.skip_s3
@@ -1745,6 +1946,13 @@ def main() -> int:
         dummy_direction_metrics = build_always_up_baseline_metrics(
             y_test=direction_dataset["y_test"],
         )
+        always_down_direction_metrics = build_always_down_baseline_metrics(
+            y_test=direction_dataset["y_test"],
+        )
+        stratified_random_direction_metrics = build_stratified_random_baseline_metrics(
+            y_test=direction_dataset["y_test"],
+            seed=args.seed + 10_000,
+        )
         print(f"  Keras direction classifier finished in {keras_seconds:.1f}s")
 
         _, keras_price_frame = build_keras_direction_evaluation(
@@ -1755,13 +1963,8 @@ def main() -> int:
             lookback=args.lookback,
         )
 
-        quantum_direction_metrics = DirectionComparisonMetrics(
-            sample_count=quantum_asset.test_metrics.sample_count,
-            accuracy=float(quantum_asset.test_metrics.accuracy or 0.0),
-            precision=float(quantum_asset.test_metrics.precision or 0.0),
-            recall=float(quantum_asset.test_metrics.recall or 0.0),
-            f1=float(quantum_asset.test_metrics.f1 or 0.0),
-            confusion_matrix=dict(quantum_asset.test_metrics.confusion_matrix),
+        quantum_direction_metrics = direction_metrics_from_confusion_matrix(
+            matrix=dict(quantum_asset.test_metrics.confusion_matrix),
         )
 
         # --- Artifacts ---
@@ -1786,6 +1989,8 @@ def main() -> int:
             keras_direction_metrics=keras_direction_metrics,
             quantum_direction_metrics=quantum_direction_metrics,
             dummy_direction_metrics=dummy_direction_metrics,
+            always_down_direction_metrics=always_down_direction_metrics,
+            stratified_random_direction_metrics=stratified_random_direction_metrics,
             price_comparison_frame=keras_price_frame,
             sample_plot_points=args.sample_plot_points,
         )
@@ -1807,6 +2012,8 @@ def main() -> int:
             keras_direction_metrics=keras_direction_metrics,
             quantum_direction_metrics=quantum_direction_metrics,
             dummy_direction_metrics=dummy_direction_metrics,
+            always_down_direction_metrics=always_down_direction_metrics,
+            stratified_random_direction_metrics=stratified_random_direction_metrics,
             quantum_execution_mode=quantum_asset.execution_mode,
             quantum_backend_name=quantum_asset.backend_name,
             quantum_shots=args.quantum_shots,
@@ -1818,6 +2025,7 @@ def main() -> int:
             quantum_train_samples=quantum_asset.sampled_counts.get("train", 0),
             quantum_validation_samples=quantum_asset.sampled_counts.get("validation", 0),
             quantum_test_samples=quantum_asset.sampled_counts.get("test", 0),
+            original_test_samples=direction_dataset["original_counts"].get("test", 0),
             dashboard_path=dashboard_path,
             confusion_chart_path=confusion_chart_path,
         )
@@ -1876,6 +2084,8 @@ def main() -> int:
                 keras_direction_metrics=keras_direction_metrics,
                 quantum_direction_metrics=quantum_direction_metrics,
                 dummy_direction_metrics=dummy_direction_metrics,
+                always_down_direction_metrics=always_down_direction_metrics,
+                stratified_random_direction_metrics=stratified_random_direction_metrics,
                 quantum_execution_mode=quantum_asset.execution_mode,
                 quantum_backend_name=quantum_asset.backend_name,
                 quantum_shots=args.quantum_shots,
@@ -1887,6 +2097,7 @@ def main() -> int:
                 quantum_train_samples=quantum_asset.sampled_counts.get("train", 0),
                 quantum_validation_samples=quantum_asset.sampled_counts.get("validation", 0),
                 quantum_test_samples=quantum_asset.sampled_counts.get("test", 0),
+                original_test_samples=direction_dataset["original_counts"].get("test", 0),
             )
         )
 

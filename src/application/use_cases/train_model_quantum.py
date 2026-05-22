@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+from html import escape
 from pathlib import Path
 import os
 import shutil
@@ -107,9 +108,15 @@ class QuantumModelArtifact:
     model_local_path: str
     preprocessor_local_path: str
     training_details_local_path: str
+    report_local_path: str
+    metrics_chart_local_path: str
+    pca_chart_local_path: str
     model_s3_uri: str | None
     preprocessor_s3_uri: str | None
     training_details_s3_uri: str | None
+    report_s3_uri: str | None
+    metrics_chart_s3_uri: str | None
+    pca_chart_s3_uri: str | None
     train_metrics: QuantumClassificationMetrics
     validation_metrics: QuantumClassificationMetrics
     test_metrics: QuantumClassificationMetrics
@@ -269,6 +276,84 @@ class TrainQuantumModelUseCase:
                 X=transformed_dataset["X_test"],
                 y=transformed_dataset["y_test"],
             )
+            metrics_chart_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="quantum_classification_metrics.svg",
+            )
+            metrics_chart_path = self._local_store.prepare_path(metrics_chart_relative_path)
+            self._write_quantum_metrics_svg(
+                destination=metrics_chart_path,
+                train_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+            )
+            metrics_chart_s3_uri = None
+            if self._s3_store is not None:
+                metrics_chart_s3_uri = self._s3_store.upload_file(
+                    local_path=metrics_chart_path,
+                    relative_path=metrics_chart_relative_path,
+                )
+
+            pca_chart_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="quantum_pca_explained_variance.svg",
+            )
+            pca_chart_path = self._local_store.prepare_path(pca_chart_relative_path)
+            self._write_pca_variance_svg(
+                destination=pca_chart_path,
+                explained_variance_ratio=preprocessing_artifact["summary"][
+                    "explained_variance_ratio"
+                ],
+            )
+            pca_chart_s3_uri = None
+            if self._s3_store is not None:
+                pca_chart_s3_uri = self._s3_store.upload_file(
+                    local_path=pca_chart_path,
+                    relative_path=pca_chart_relative_path,
+                )
+
+            report_relative_path = self._build_run_artifact_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                extraction_date=request.extraction_date,
+                trained_at_token=trained_at_token,
+                filename="quantum_training_report.md",
+            )
+            report_path = self._local_store.prepare_path(report_relative_path)
+            self._write_quantum_training_report(
+                destination=report_path,
+                symbol=symbol,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                runtime_context=runtime_context,
+                transformed_dataset=transformed_dataset,
+                sampled_dataset=sampled_dataset,
+                training_details=training_details,
+                preprocessing_summary=preprocessing_artifact["summary"],
+                model_path=model_path,
+                preprocessor_path=preprocessor_path,
+                details_path=details_path,
+                metrics_chart_path=metrics_chart_path,
+                pca_chart_path=pca_chart_path,
+                train_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+            )
+            report_s3_uri = None
+            if self._s3_store is not None:
+                report_s3_uri = self._s3_store.upload_file(
+                    local_path=report_path,
+                    relative_path=report_relative_path,
+                )
 
             artifacts.append(
                 QuantumModelArtifact(
@@ -291,9 +376,15 @@ class TrainQuantumModelUseCase:
                     model_local_path=str(model_path),
                     preprocessor_local_path=str(preprocessor_path),
                     training_details_local_path=str(details_path),
+                    report_local_path=str(report_path),
+                    metrics_chart_local_path=str(metrics_chart_path),
+                    pca_chart_local_path=str(pca_chart_path),
                     model_s3_uri=model_s3_uri,
                     preprocessor_s3_uri=preprocessor_s3_uri,
                     training_details_s3_uri=training_details_s3_uri,
+                    report_s3_uri=report_s3_uri,
+                    metrics_chart_s3_uri=metrics_chart_s3_uri,
+                    pca_chart_s3_uri=pca_chart_s3_uri,
                     train_metrics=train_metrics,
                     validation_metrics=validation_metrics,
                     test_metrics=test_metrics,
@@ -397,8 +488,8 @@ class TrainQuantumModelUseCase:
             raise ValueError("max_train_samples must be greater than zero.")
         if request.max_validation_samples <= 0:
             raise ValueError("max_validation_samples must be greater than zero.")
-        if request.max_test_samples <= 0:
-            raise ValueError("max_test_samples must be greater than zero.")
+        if request.max_test_samples < 0:
+            raise ValueError("max_test_samples must be zero or greater.")
         if not request.model_name_prefix.strip():
             raise ValueError("model_name_prefix must not be blank.")
 
@@ -564,7 +655,7 @@ class TrainQuantumModelUseCase:
         max_samples: int,
         seed: int,
     ) -> tuple[np.ndarray, np.ndarray]:
-        if len(X) == 0 or len(X) <= max_samples:
+        if max_samples <= 0 or len(X) == 0 or len(X) <= max_samples:
             return X, y
 
         indices = np.arange(len(X))
@@ -833,6 +924,238 @@ class TrainQuantumModelUseCase:
             },
         )
 
+    def _write_quantum_training_report(
+        self,
+        *,
+        destination: Path,
+        symbol: str,
+        request: QuantumTrainingRequest,
+        generated_at_utc: str,
+        runtime_context: dict[str, Any],
+        transformed_dataset: dict[str, Any],
+        sampled_dataset: dict[str, Any],
+        training_details: dict[str, Any],
+        preprocessing_summary: dict[str, Any],
+        model_path: Path,
+        preprocessor_path: Path,
+        details_path: Path,
+        metrics_chart_path: Path,
+        pca_chart_path: Path,
+        train_metrics: QuantumClassificationMetrics,
+        validation_metrics: QuantumClassificationMetrics,
+        test_metrics: QuantumClassificationMetrics,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        metric_rows = "\n".join(
+            self._format_classification_metric_row(name, metrics)
+            for name, metrics in (
+                ("Train", train_metrics),
+                ("Validation", validation_metrics),
+                ("Test", test_metrics),
+            )
+        )
+        optimizer = training_details["optimizer"]
+        content = f"""# Relatorio de Treinamento Quantico - {symbol.upper()}
+
+## Execucao
+
+| Campo | Valor |
+| --- | --- |
+| Gerado em UTC | `{generated_at_utc}` |
+| Source | `{request.source}` |
+| Data de extracao | `{request.extraction_date.isoformat()}` |
+| Tarefa | `next_day_direction_classification` |
+| Modo de execucao | `{request.execution_mode}` |
+| Backend | `{runtime_context["backend_name"]}` |
+| Shots | `{request.shots}` |
+| Qubits | `{transformed_dataset["num_qubits"]}` |
+| Feature map reps | `{request.feature_map_reps}` |
+| Ansatz reps | `{request.ansatz_reps}` |
+| Otimizador | `{optimizer["name"]}` |
+| Iteracoes maximas do otimizador | `{optimizer["effective_maxiter"]}` |
+| Avaliacoes da funcao objetivo | `{optimizer["function_evaluations"]}` |
+| Valor objetivo | `{self._format_optional_float(optimizer["objective_value"])}` |
+
+## Dataset
+
+| Split | Linhas originais | Linhas amostradas |
+| --- | ---: | ---: |
+| Train | {sampled_dataset["original_counts"]["train"]} | {sampled_dataset["sampled_counts"]["train"]} |
+| Validation | {sampled_dataset["original_counts"]["validation"]} | {sampled_dataset["sampled_counts"]["validation"]} |
+| Test | {sampled_dataset["original_counts"]["test"]} | {sampled_dataset["sampled_counts"]["test"]} |
+
+## Metricas
+
+| Split | Samples | Accuracy | Precision | Recall | F1 | Taxa positiva prevista | TN | FP | FN | TP |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+{metric_rows}
+
+## Graficos
+
+![Classification metrics]({metrics_chart_path.name})
+
+![PCA explained variance]({pca_chart_path.name})
+
+## Preprocessing
+
+| Campo | Valor |
+| --- | --- |
+| Scaler | `{preprocessing_summary.get("scaler", "n/a")}` |
+| PCA components | `{preprocessing_summary.get("pca_components", "n/a")}` |
+| Explained variance ratio | `{tuple(round(float(value), 6) for value in preprocessing_summary.get("explained_variance_ratio", []))}` |
+
+## Artefatos
+
+| Artefato | Caminho |
+| --- | --- |
+| Model JSON | `{model_path}` |
+| Preprocessor | `{preprocessor_path}` |
+| Training details JSON | `{details_path}` |
+
+## Notas Tecnicas
+
+- Este relatorio descreve o classificador direcional ajustado, nao a performance real de forecast.
+- Testes pequenos ou subamostrados tornam accuracy e F1 instaveis; compare com baselines direcionais antes de interpretar ganho.
+- Taxa positiva prevista muito alta, ou quase nenhuma previsao negativa, indica comportamento direcional degenerado.
+- A compressao por PCA para a dimensao quantica pode descartar informacao temporal da janela de lags.
+"""
+        destination.write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _format_classification_metric_row(
+        name: str,
+        metrics: QuantumClassificationMetrics,
+    ) -> str:
+        matrix = metrics.confusion_matrix
+        return (
+            f"| {name} | {metrics.sample_count} | "
+            f"{TrainQuantumModelUseCase._format_optional_float(metrics.accuracy)} | "
+            f"{TrainQuantumModelUseCase._format_optional_float(metrics.precision)} | "
+            f"{TrainQuantumModelUseCase._format_optional_float(metrics.recall)} | "
+            f"{TrainQuantumModelUseCase._format_optional_float(metrics.f1)} | "
+            f"{TrainQuantumModelUseCase._format_optional_float(metrics.positive_rate)} | "
+            f"{matrix['tn']} | {matrix['fp']} | {matrix['fn']} | {matrix['tp']} |"
+        )
+
+    @staticmethod
+    def _format_optional_float(value: float | None) -> str:
+        if value is None:
+            return "n/a"
+        return f"{value:.6g}"
+
+    @staticmethod
+    def _write_quantum_metrics_svg(
+        *,
+        destination: Path,
+        train_metrics: QuantumClassificationMetrics,
+        validation_metrics: QuantumClassificationMetrics,
+        test_metrics: QuantumClassificationMetrics,
+    ) -> None:
+        bars = [
+            ("Train Acc", train_metrics.accuracy, "#1f77b4"),
+            ("Val Acc", validation_metrics.accuracy, "#ff7f0e"),
+            ("Test Acc", test_metrics.accuracy, "#d62728"),
+            ("Train F1", train_metrics.f1, "#4f46e5"),
+            ("Val F1", validation_metrics.f1, "#059669"),
+            ("Test F1", test_metrics.f1, "#b91c1c"),
+            ("Train Pos Rate", train_metrics.positive_rate, "#0891b2"),
+            ("Val Pos Rate", validation_metrics.positive_rate, "#ca8a04"),
+            ("Test Pos Rate", test_metrics.positive_rate, "#7c2d12"),
+        ]
+        TrainQuantumModelUseCase._write_bar_chart_svg(
+            destination=destination,
+            title="Quantum Directional Metrics",
+            bars=bars,
+            y_label="Rate",
+            fixed_y_max=1.0,
+        )
+
+    @staticmethod
+    def _write_pca_variance_svg(
+        *,
+        destination: Path,
+        explained_variance_ratio: list[float] | tuple[float, ...],
+    ) -> None:
+        bars = [
+            (f"PC {index + 1}", float(value), "#2563eb")
+            for index, value in enumerate(explained_variance_ratio)
+        ]
+        TrainQuantumModelUseCase._write_bar_chart_svg(
+            destination=destination,
+            title="PCA Explained Variance Ratio",
+            bars=bars,
+            y_label="Variance ratio",
+            fixed_y_max=max(1.0, sum(value for _, value, _ in bars) if bars else 1.0),
+        )
+
+    @staticmethod
+    def _write_bar_chart_svg(
+        *,
+        destination: Path,
+        title: str,
+        bars: list[tuple[str, float | None, str]],
+        y_label: str,
+        fixed_y_max: float | None = None,
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        values = [float(value) for _, value, _ in bars if value is not None and np.isfinite(value)]
+        if not values:
+            destination.write_text(
+                TrainQuantumModelUseCase._empty_svg(title, "No metric values available."),
+                encoding="utf-8",
+            )
+            return
+        width, height = 920, 380
+        left, right, top, bottom = 72, 24, 46, 104
+        plot_width = width - left - right
+        plot_height = height - top - bottom
+        y_max = fixed_y_max if fixed_y_max is not None else max(values) * 1.12
+        y_max = y_max if y_max and y_max > 0 else 1.0
+        bar_gap = 14
+        bar_width = (plot_width - bar_gap * (len(bars) - 1)) / max(len(bars), 1)
+        svg_bars: list[str] = []
+        for index, (label, value, color) in enumerate(bars):
+            numeric_value = 0.0 if value is None or not np.isfinite(value) else float(value)
+            x = left + index * (bar_width + bar_gap)
+            bar_height = min(numeric_value / y_max, 1.0) * plot_height
+            y = top + plot_height - bar_height
+            svg_bars.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" '
+                f'height="{bar_height:.1f}" fill="{color}" />'
+                f'<text x="{x + bar_width / 2:.1f}" y="{y - 6:.1f}" '
+                f'text-anchor="middle" font-size="11">{numeric_value:.4g}</text>'
+                f'<text x="{x + bar_width / 2:.1f}" y="{height - 72}" '
+                f'text-anchor="end" font-size="11" transform="rotate(-35 {x + bar_width / 2:.1f} {height - 72})">{escape(label)}</text>'
+            )
+        y_ticks = []
+        for tick in range(5):
+            value = y_max * tick / 4
+            y = top + plot_height - (value / y_max) * plot_height
+            y_ticks.append(
+                f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#e5e7eb" />'
+                f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" font-size="11">{value:.4g}</text>'
+            )
+        svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="{left}" y="28" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="18" y="{top + plot_height / 2:.1f}" font-size="12" transform="rotate(-90 18 {top + plot_height / 2:.1f})">{escape(y_label)}</text>
+{''.join(y_ticks)}
+<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="#111827" />
+<line x1="{left}" y1="{top + plot_height}" x2="{width - right}" y2="{top + plot_height}" stroke="#111827" />
+{''.join(svg_bars)}
+</svg>
+"""
+        destination.write_text(svg, encoding="utf-8")
+
+    @staticmethod
+    def _empty_svg(title: str, message: str) -> str:
+        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="260" viewBox="0 0 840 260">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="42" y="42" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="42" y="92" font-size="14">{escape(message)}</text>
+</svg>
+"""
+
     @staticmethod
     def _to_path_safe_timestamp(generated_at_utc: str) -> str:
         parsed = datetime.fromisoformat(generated_at_utc)
@@ -917,6 +1240,26 @@ class TrainQuantumModelUseCase:
             / f"extraction_date={extraction_date.isoformat()}"
             / f"trained_at={trained_at_token}"
             / "training_details.json"
+        )
+
+    @staticmethod
+    def _build_run_artifact_relative_path(
+        *,
+        source: str,
+        symbol: str,
+        lookback: int,
+        extraction_date: date,
+        trained_at_token: str,
+        filename: str,
+    ) -> Path:
+        return (
+            Path("quantum_training_runs")
+            / f"source={source}"
+            / f"symbol={symbol.upper()}"
+            / f"lookback={lookback}"
+            / f"extraction_date={extraction_date.isoformat()}"
+            / f"trained_at={trained_at_token}"
+            / filename
         )
 
     @staticmethod

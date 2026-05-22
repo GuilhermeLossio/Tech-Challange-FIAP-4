@@ -108,6 +108,51 @@ class FuturePredictionService:
                 continue
         return tuple(sorted(set(horizons)))
 
+    def resolve_latest_horizon_days(
+        self,
+        *,
+        symbol: str,
+        lookback: int | None = None,
+        requested_extraction_date: date | None = None,
+    ) -> int | None:
+        symbol_root = (
+            self._processed_root_dir
+            / "future_predict"
+            / f"source={self._source}"
+            / f"symbol={symbol.strip().upper()}"
+            / f"lookback={lookback or self._lookback}"
+        )
+        if not symbol_root.exists():
+            return None
+
+        candidates: list[tuple[date, str, int]] = []
+        for horizon_partition in symbol_root.glob("horizon_days=*"):
+            try:
+                horizon_days = int(horizon_partition.name.split("=", 1)[-1])
+            except ValueError:
+                continue
+            for extraction_partition in horizon_partition.glob("extraction_date=*"):
+                token = extraction_partition.name.split("=", 1)[-1]
+                try:
+                    extraction_date = datetime.strptime(token, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if (
+                    requested_extraction_date is not None
+                    and extraction_date > requested_extraction_date
+                ):
+                    continue
+                generated_partitions = sorted(extraction_partition.glob("generated_at=*"))
+                for generated_partition in generated_partitions:
+                    if (generated_partition / "future_predict.parquet").exists():
+                        candidates.append(
+                            (extraction_date, generated_partition.name, horizon_days)
+                        )
+
+        if not candidates:
+            return None
+        return max(candidates)[2]
+
     def resolve_effective_extraction_date(
         self,
         *,

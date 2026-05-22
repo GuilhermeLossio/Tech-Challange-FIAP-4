@@ -131,6 +131,9 @@
             <div class="meta-chip">Today UTC {{ today_utc }}</div>
             <div class="meta-chip">Extraction {{ selected_extraction_date or 'auto' }}</div>
             <div class="meta-chip">Horizon {{ horizon_days }}</div>
+            {% if comparison_future_result %}
+            <div class="meta-chip">Forecast {{ comparison_future_result.generated_at }}</div>
+            {% endif %}
             <div class="meta-chip meta-chip-accent">Quantum online: disabled</div>
           </div>
         </header>
@@ -258,7 +261,7 @@
               <div class="panel-title">Six-Month Market Context</div>
               <div class="panel-subtitle">
                 {% if historical_window %}
-                Observed closes from {{ historical_window.start_date }} to {{ historical_window.end_date }}, followed by standard and quantum forward paths.
+                Observed closes from {{ historical_window.start_date }} to {{ historical_window.end_date }}, followed by standard and quantum forward paths{% if comparison_future_result %} generated at {{ comparison_future_result.generated_at }}{% endif %}.
                 {% else %}
                 Historical context unavailable for the current filter set.
                 {% endif %}

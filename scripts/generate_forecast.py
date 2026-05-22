@@ -105,6 +105,50 @@ def parse_args() -> argparse.Namespace:
         help="Skip quantum predictions.",
     )
     parser.add_argument(
+        "--quantum-runtime-mode",
+        choices=("local", "cloud"),
+        default="local",
+        help=(
+            "Runtime used only for quantum forecast inference. Training never uses "
+            "IBM Quantum in this workflow. Use cloud only for small, confirmed runs."
+        ),
+    )
+    parser.add_argument(
+        "--quantum-backend",
+        default=None,
+        help="Real backend name for cloud quantum prediction. Omit to use least_busy.",
+    )
+    parser.add_argument(
+        "--quantum-shots",
+        type=int,
+        default=256,
+        help="Shots for quantum forecast inference. Default: 256.",
+    )
+    parser.add_argument(
+        "--quantum-optimization-level",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=0,
+        help="Transpiler optimization level for quantum forecast inference.",
+    )
+    parser.add_argument(
+        "--max-cloud-quantum-predictions",
+        type=int,
+        default=5,
+        help=(
+            "Safety limit for cloud quantum predictions. Effective requested jobs "
+            "are roughly symbols * horizon_days."
+        ),
+    )
+    parser.add_argument(
+        "--confirm-ibm-runtime-cost",
+        action="store_true",
+        help=(
+            "Required with --quantum-runtime-mode cloud. Confirms that forecast "
+            "inference may submit IBM Quantum Runtime jobs."
+        ),
+    )
+    parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist forecast files locally and skip S3 upload.",
@@ -314,6 +358,12 @@ def main() -> int:
         include_normal=not args.skip_normal,
         include_quantum=not args.skip_quant,
         upload_to_s3=upload_to_s3,
+        quantum_runtime_mode=args.quantum_runtime_mode,
+        quantum_backend_name=args.quantum_backend,
+        quantum_shots=args.quantum_shots,
+        quantum_optimization_level=args.quantum_optimization_level,
+        confirm_ibm_runtime_cost=args.confirm_ibm_runtime_cost,
+        max_cloud_quantum_predictions=args.max_cloud_quantum_predictions,
     )
 
     if args.forecast_end_date:
@@ -329,8 +379,12 @@ def main() -> int:
 
     print("Forecast generation completed.")
     print(f"Manifest local: {result.manifest_local_path}")
+    print(f"Unified report local: {result.unified_report_local_path}")
+    print(f"Unified latest report local: {result.unified_latest_report_local_path}")
     if result.manifest_s3_uri:
         print(f"Manifest S3: {result.manifest_s3_uri}")
+    if result.unified_report_s3_uri:
+        print(f"Unified report S3: {result.unified_report_s3_uri}")
 
     for asset in result.assets:
         print(
@@ -340,12 +394,18 @@ def main() -> int:
         )
         print(f"  last observed: {asset.last_observed_date} close={asset.last_observed_close:.4f}")
         print(f"  local: {asset.local_path}")
+        print(f"  report: {asset.report_local_path}")
+        print(f"  chart: {asset.chart_local_path}")
         if asset.normal_model_local_path:
             print(f"  normal model: {asset.normal_model_local_path}")
         if asset.quantum_model_local_path:
             print(f"  quantum model: {asset.quantum_model_local_path}")
         if asset.s3_uri:
             print(f"  s3: {asset.s3_uri}")
+        if asset.report_s3_uri:
+            print(f"  report s3: {asset.report_s3_uri}")
+        if asset.chart_s3_uri:
+            print(f"  chart s3: {asset.chart_s3_uri}")
 
     if upload_to_s3 and not args.skip_athena:
         provision_request = AthenaProvisionRequest(

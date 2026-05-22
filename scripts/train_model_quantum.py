@@ -19,26 +19,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _argv_requests_unconfirmed_cloud_run(argv: list[str]) -> bool:
-    """Fast preflight before dependency imports to avoid accidental cloud runs."""
+def _argv_requests_cloud_training(argv: list[str]) -> bool:
+    """Fast preflight before dependency imports to block cloud training."""
     mode_is_cloud = "--mode=cloud" in argv
     for index, token in enumerate(argv[:-1]):
         if token == "--mode" and argv[index + 1] == "cloud":
             mode_is_cloud = True
             break
 
-    return (
-        mode_is_cloud
-        and "--list-backends" not in argv
-        and "--confirm-ibm-runtime-cost" not in argv
-    )
+    return mode_is_cloud
 
 
-if _argv_requests_unconfirmed_cloud_run(sys.argv[1:]):
+if _argv_requests_cloud_training(sys.argv[1:]):
     raise SystemExit(
-        "Refusing to run with --mode cloud without explicit confirmation.\n"
-        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
-        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+        "Refusing to train with --mode cloud.\n"
+        "Project policy: IBM Quantum Runtime is reserved for forecast inference only."
     )
 
 from src.application.use_cases.train_model_quantum import (  # noqa: E402
@@ -65,7 +60,7 @@ SIMULATOR_DEFAULTS: dict[str, int | str] = {
     "optimizer_maxiter": 50,
     "max_train_samples": 128,
     "max_validation_samples": 64,
-    "max_test_samples": 64,
+    "max_test_samples": 0,
     "optimization_level": 1,
 }
 
@@ -179,7 +174,7 @@ def parse_args() -> argparse.Namespace:
         "--max-test-samples",
         type=int,
         default=None,
-        help="Test samples. Default: 64 (local) / 16 (cloud).",
+        help="Test samples. Use 0 for the full test split. Default: full split (local) / 16 (cloud).",
     )
 
     # --- storage ---
@@ -187,6 +182,14 @@ def parse_args() -> argparse.Namespace:
         "--skip-s3",
         action="store_true",
         help="Only persist artifacts locally; skip S3 upload.",
+    )
+    parser.add_argument(
+        "--allow-local-quantum-training",
+        action="store_true",
+        help=(
+            "Explicit escape hatch for local simulator VQC training. IBM Quantum "
+            "cloud training remains blocked."
+        ),
     )
 
     return parser.parse_args()
@@ -203,14 +206,15 @@ def apply_mode_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def require_ibm_runtime_confirmation(args: argparse.Namespace) -> None:
-    """Prevent accidental IBM Quantum hardware submissions."""
-    if args.mode != "cloud" or args.list_backends or args.confirm_ibm_runtime_cost:
+    """Prevent accidental IBM Quantum hardware submissions during training."""
+    if args.mode != "cloud":
         return
 
     raise SystemExit(
-        "Refusing to run with --mode cloud without explicit confirmation.\n"
-        "Cloud mode may submit jobs to IBM Quantum and consume runtime minutes.\n"
-        "Re-run with --confirm-ibm-runtime-cost after reviewing the run budget."
+        "Refusing to train with --mode cloud.\n"
+        "Project policy: IBM Quantum Runtime is reserved for forecast inference "
+        "only. Train locally or use `scripts/generate_forecast.py "
+        "--quantum-runtime-mode cloud` for a controlled prediction run."
     )
 
 
@@ -290,6 +294,13 @@ def main() -> int:
     args = parse_args()
     args = apply_mode_defaults(args)
     require_ibm_runtime_confirmation(args)
+    if not args.allow_local_quantum_training:
+        raise SystemExit(
+            "Quantum training is disabled by default. Project policy: training "
+            "must stay classical; use quantum only during forecast inference. "
+            "Pass --allow-local-quantum-training only for an intentional local "
+            "simulator experiment."
+        )
 
     settings = TrainingPipelineSettings.from_env()
     upload_to_s3 = not args.skip_s3
@@ -374,12 +385,21 @@ def main() -> int:
         print(f"  model bundle   : {asset.model_local_path}")
         print(f"  preprocessor   : {asset.preprocessor_local_path}")
         print(f"  training detail: {asset.training_details_local_path}")
+        print(f"  report         : {asset.report_local_path}")
+        print(f"  metrics chart  : {asset.metrics_chart_local_path}")
+        print(f"  PCA chart      : {asset.pca_chart_local_path}")
         if asset.model_s3_uri:
             print(f"  model S3       : {asset.model_s3_uri}")
         if asset.preprocessor_s3_uri:
             print(f"  preprocessor S3: {asset.preprocessor_s3_uri}")
         if asset.training_details_s3_uri:
             print(f"  training det S3: {asset.training_details_s3_uri}")
+        if asset.report_s3_uri:
+            print(f"  report S3      : {asset.report_s3_uri}")
+        if asset.metrics_chart_s3_uri:
+            print(f"  metrics SVG S3 : {asset.metrics_chart_s3_uri}")
+        if asset.pca_chart_s3_uri:
+            print(f"  PCA SVG S3     : {asset.pca_chart_s3_uri}")
 
     return 0
 
