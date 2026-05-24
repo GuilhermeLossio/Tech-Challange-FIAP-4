@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import date, datetime
 import os
 from pathlib import Path
@@ -32,6 +33,7 @@ from src.infrastructure.storage.s3_raw_store import S3RawStore  # noqa: E402
 
 
 DEFAULT_SYMBOLS = ("NVDA", "AMD", "TSM", "ASML", "QCOM")
+DEFAULT_ATHENA_OUTPUT_S3_URI = "s3://quantumprojects3/athena-results/"
 
 
 def parse_args() -> argparse.Namespace:
@@ -171,7 +173,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--athena-output-s3-uri",
         default=None,
-        help="S3 URI for Athena query results. Required when the workgroup has no output location configured.",
+        help=(
+            "S3 URI for Athena query results. Defaults to ATHENA_OUTPUT_S3_URI "
+            f"or {DEFAULT_ATHENA_OUTPUT_S3_URI}."
+        ),
     )
     parser.add_argument(
         "--replace-athena-tables",
@@ -193,7 +198,13 @@ def parse_iso_date(value: str) -> date:
         raise SystemExit(f"Invalid date {value!r}. Use YYYY-MM-DD.") from exc
 
 
-def detect_latest_extraction_date(processed_root: Path) -> date:
+def detect_latest_extraction_date(
+    processed_root: Path,
+    *,
+    source: str,
+    target_column: str,
+    lookback: int,
+) -> date:
     manifests_root = processed_root / "manifests"
     if not manifests_root.exists():
         raise SystemExit(
@@ -207,6 +218,18 @@ def detect_latest_extraction_date(processed_root: Path) -> date:
         if not manifest_path.exists():
             continue
 
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        request_payload = payload.get("request", {})
+        if (
+            request_payload.get("source") != source
+            or request_payload.get("target_column") != target_column
+            or int(request_payload.get("lookback", -1)) != lookback
+        ):
+            continue
+
         token = partition.name.split("=", 1)[-1]
         try:
             candidates.append(parse_iso_date(token))
@@ -215,7 +238,9 @@ def detect_latest_extraction_date(processed_root: Path) -> date:
 
     if not candidates:
         raise SystemExit(
-            f"No refined extraction_date partitions were found under {manifests_root}."
+            "No compatible refined extraction_date partitions were found under "
+            f"{manifests_root} for source={source!r}, target_column={target_column!r}, "
+            f"lookback={lookback}."
         )
 
     return max(candidates)
@@ -322,7 +347,12 @@ def main() -> int:
     extraction_date = (
         parse_iso_date(args.extraction_date)
         if args.extraction_date
-        else detect_latest_extraction_date(settings.local_processed_dir)
+        else detect_latest_extraction_date(
+            settings.local_processed_dir,
+            source=args.source,
+            target_column=args.target_column,
+            lookback=args.lookback,
+        )
     )
     symbols = tuple(symbol.upper() for symbol in args.symbols)
     horizon_days = resolve_horizon_days(
@@ -423,7 +453,11 @@ def main() -> int:
             repair_tables=not args.skip_athena_repair,
             replace_tables=args.replace_athena_tables,
             workgroup=args.athena_workgroup or athena_settings.athena_workgroup,
-            output_s3_uri=args.athena_output_s3_uri or athena_settings.athena_output_s3_uri,
+            output_s3_uri=(
+                args.athena_output_s3_uri
+                or athena_settings.athena_output_s3_uri
+                or DEFAULT_ATHENA_OUTPUT_S3_URI
+            ),
             execute=True,
         )
         try:

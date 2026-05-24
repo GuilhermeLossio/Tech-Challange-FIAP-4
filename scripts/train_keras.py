@@ -100,6 +100,16 @@ def parse_args() -> argparse.Namespace:
         help="Prefix used when publishing models, for example `lstm` -> `models/lstm_nvda.keras`.",
     )
     parser.add_argument(
+        "--prediction-target-mode",
+        choices=("price", "return"),
+        default="price",
+        help=(
+            "Train the LSTM to predict the next price (`price`) or the next "
+            "percent return (`return`). Use a distinct --model-name-prefix, "
+            "for example lstm_return, when training return models."
+        ),
+    )
+    parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist training artifacts locally and skip S3 upload.",
@@ -192,6 +202,7 @@ def main() -> int:
         seed=args.seed,
         verbose=args.verbose,
         model_name_prefix=args.model_name_prefix,
+        prediction_target_mode=args.prediction_target_mode,
     )
     try:
         result = service.train(request)

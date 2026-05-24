@@ -171,6 +171,9 @@ class _FakeForecastUseCase:
                     "predicted_direction_label": "up",
                     "is_price_proxy": False,
                     "price_proxy_method": None,
+                    "step_elapsed_ms": 17.6,
+                    "prediction_constraint_applied": False,
+                    "dynamic_cumulative_return_cap": 0.35,
                 },
                 {
                     "forecast_step": 2,
@@ -183,6 +186,9 @@ class _FakeForecastUseCase:
                     "predicted_direction_label": "up",
                     "is_price_proxy": True,
                     "price_proxy_method": "directional_proxy",
+                    "step_elapsed_ms": 343.1,
+                    "prediction_constraint_applied": True,
+                    "dynamic_cumulative_return_cap": 0.35,
                 },
             ),
             local_path="data/processed/future_predict/.../future_predict.parquet",
@@ -283,7 +289,12 @@ def test_forecasts_without_extraction_date_use_aligned_default(
     response = client.get("/forecasts/NVDA")
 
     assert response.status_code == 200
-    assert response.json()["extraction_date"] == ALIGNED_EXTRACTION_DATE.isoformat()
+    payload = response.json()
+    assert payload["extraction_date"] == ALIGNED_EXTRACTION_DATE.isoformat()
+    assert payload["runtime_ratio_vqc_over_lstm"] == pytest.approx(19.494, rel=1e-3)
+    assert payload["guardrail_inconsistency_detected"] is False
+    assert payload["model_summaries"][1]["uses_price_proxy"] is True
+    assert payload["model_summaries"][1]["guardrail_activations_total"] == 1
     assert forecast_use_case.requests[-1].extraction_date == ALIGNED_EXTRACTION_DATE
 
 

@@ -1,0 +1,193 @@
+{% macro ExecutiveSummary(report) %}
+<section class="panel forecast-dashboard-panel">
+  <div class="forecast-dashboard-header">
+    <div>
+      <div class="eyebrow">Executive Summary</div>
+      <h2>{{ report.symbol }} Forecast Dashboard</h2>
+      <p>Model comparison, execution performance, price forecast, directional accuracy, and guardrail transparency.</p>
+    </div>
+    <div class="forecast-dashboard-meta">
+      <span>Last close ${{ '%.2f'|format(report.last_observed_close) }}</span>
+      <span>{{ report.horizon_days }} business days</span>
+      {% if report.uses_price_proxy %}<span class="badge badge-proxy">Price proxy in use</span>{% endif %}
+    </div>
+  </div>
+
+  {% if report.alerts %}
+  <div class="forecast-alert-stack">
+    {% for alert in report.alerts %}
+    {{ GuardrailAlert(alert) }}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="executive-kpi-grid">
+    {% for card in report.executive_cards %}
+    {{ ModelMetricCard(card) }}
+    {% endfor %}
+  </div>
+
+  <div class="forecast-dashboard-tabs" aria-label="Forecast dashboard sections">
+    <span>Runtime Performance</span>
+    <span>Price Forecast</span>
+    <span>Directional Accuracy</span>
+    <span>Detailed Comparison</span>
+  </div>
+
+  <div class="forecast-section-grid">
+    {{ RuntimeComparison(report) }}
+    {{ ForecastSummary(report) }}
+    {{ DirectionAccuracy(report) }}
+  </div>
+
+  <section class="technical-note">
+    <div>
+      <div class="section-kicker">Technical explanation</div>
+      <p>{{ report.timing_copy }}</p>
+      {% if report.uses_price_proxy %}
+      <p>The VQC is approximately a direction and volatility model in this interface. Its output is converted into an estimated price path through the configured proxy, so it should not be read as a direct price regression.</p>
+      {% endif %}
+      {% if report.same_capped_return %}
+      <p>Equal capped returns should be interpreted as a guardrail outcome, not as evidence that the unconstrained LSTM and VQC paths were identical.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {{ ModelComparisonTable(report.detailed_rows) }}
+</section>
+{% endmacro %}
+
+{% macro ModelMetricCard(card) %}
+<article class="executive-kpi executive-kpi-{{ card.tone }}">
+  <div class="metric-label">{{ card.label }}</div>
+  <div class="executive-kpi-value">{{ card.value }}</div>
+  <div class="metric-sub">{{ card.detail }}</div>
+</article>
+{% endmacro %}
+
+{% macro RuntimeComparison(report) %}
+<section class="forecast-section runtime-section">
+  <div class="section-kicker">Runtime Performance</div>
+  <h3>Execution Cost</h3>
+  <div class="runtime-ratio">
+    <span>{{ report.timing_ratio_text }}</span>
+    <small>VQC / LSTM per step</small>
+  </div>
+  <div class="model-bar-stack">
+    {% for model in report.model_summaries %}
+    <div class="model-bar-row">
+      <div class="model-bar-label">
+        <strong>{{ model.short_name }}</strong>
+        <span>{{ model.avg_runtime_text }} avg</span>
+      </div>
+      <div class="model-bar-track">
+        <span class="model-bar-fill model-bar-{{ model.predict_type }}" style="width: {{ 100 if report.timing_ratio is none or model.predict_type == 'quant' else (100 / report.timing_ratio) | round(1) }}%;"></span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if report.timing_ratio and report.timing_ratio > 10 %}
+  <span class="badge badge-cost">Significantly higher VQC computational cost</span>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{% macro ForecastSummary(report) %}
+<section class="forecast-section">
+  <div class="section-kicker">Price Forecast</div>
+  <h3>Horizon Outcome</h3>
+  <div class="forecast-model-list">
+    {% for model in report.model_summaries %}
+    <article class="forecast-model-row">
+      <div>
+        <strong>{{ model.display_name }}</strong>
+        <span>{{ model.final_label }}</span>
+      </div>
+      <div class="model-outcome model-outcome-{{ model.cumulative_return_tone }}">
+        {% if model.cumulative_return_pct < 0 %}<span aria-hidden="true">↓</span>{% elif model.cumulative_return_pct > 0 %}<span aria-hidden="true">↑</span>{% endif %}
+        {{ model.cumulative_return_text }}
+      </div>
+      <div class="badge-row">
+        {% if model.limited_by_cap %}<span class="badge badge-cap">Limited by cap</span>{% endif %}
+        {% if model.uses_price_proxy %}<span class="badge badge-proxy">{{ model.price_proxy_label }}</span>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endmacro %}
+
+{% macro DirectionAccuracy(report) %}
+<section class="forecast-section">
+  <div class="section-kicker">Directional Accuracy</div>
+  <h3>Movement Signal</h3>
+  <div class="direction-grid">
+    {% for model in report.model_summaries %}
+    <article class="direction-card">
+      <div class="direction-topline">
+        <strong>{{ model.short_name }}</strong>
+        <span>{{ model.up_rate_text }} up rate</span>
+      </div>
+      <div class="direction-meter" aria-label="{{ model.short_name }} up rate">
+        <span style="width: {{ (model.up_rate * 100.0) | round(1) }}%;"></span>
+      </div>
+      <small>{{ model.guardrail_text }} guardrail steps</small>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endmacro %}
+
+{% macro GuardrailAlert(alert) %}
+<article class="forecast-alert forecast-alert-{{ alert.tone }}">
+  <strong>{{ alert.title }}</strong>
+  <p>{{ alert.message }}</p>
+</article>
+{% endmacro %}
+
+{% macro ModelComparisonTable(rows) %}
+<section class="forecast-section detailed-comparison-section">
+  <div class="section-kicker">Detailed Comparison</div>
+  <h3>Model Comparison Table</h3>
+  <div class="table-wrap">
+    <table class="data-table forecast-comparison-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Family</th>
+          <th>Total runtime</th>
+          <th>Average runtime/step</th>
+          <th>Minimum runtime/step</th>
+          <th>Maximum runtime/step</th>
+          <th>Up rate</th>
+          <th>Cumulative return</th>
+          <th>Steps with guardrails</th>
+          <th>Price proxy</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><strong>{{ row.model }}</strong></td>
+          <td>{{ row.family }}</td>
+          <td>{{ row.total_runtime }}</td>
+          <td>{{ row.avg_runtime }}</td>
+          <td>{{ row.min_runtime }}</td>
+          <td>{{ row.max_runtime }}</td>
+          <td>{{ row.up_rate }}</td>
+          <td class="comparison-return comparison-return-{{ row.tone }}">
+            {{ row.cumulative_return }}
+            {% if row.limited_by_cap %}<span class="badge badge-cap">Limited by cap</span>{% endif %}
+          </td>
+          <td>{{ row.guardrails }}</td>
+          <td>
+            {{ row.price_proxy }}
+            {% if row.uses_price_proxy %}<span class="badge badge-proxy">Price proxy</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endmacro %}

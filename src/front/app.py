@@ -18,6 +18,7 @@ FRONT_TITLE = "Signal Deck"
 DEFAULT_SYMBOL = "NVDA"
 DEFAULT_HORIZON_DAYS = 30
 SIX_MONTH_TRADING_DAYS = 126
+DEFAULT_CUMULATIVE_RETURN_CAP = 0.35
 
 
 def create_app() -> Flask:
@@ -179,7 +180,11 @@ def create_app() -> Flask:
         training_chart = _build_training_chart(
             training_summary.keras.history if training_summary and training_summary.keras else {}
         )
-        forecast_rows = list(future_result.rows) if future_result else []
+        forecast_rows = (
+            [_with_canonical_predict_type(row) for row in future_result.rows]
+            if future_result
+            else []
+        )
         outlook_cards = _build_outlook_cards(
             comparison_future_result.rows if comparison_future_result else tuple(),
             base_close=(
@@ -197,6 +202,10 @@ def create_app() -> Flask:
             historical_window=historical_window,
             comparison_future_result=comparison_future_result,
             next_day_prediction=next_day_prediction,
+        )
+        forecast_report = _build_forecast_report(
+            comparison_future_result=comparison_future_result,
+            training_summary=training_summary,
         )
         company_snapshot_rows = _build_company_snapshot_rows(
             supported_symbols=supported_symbols,
@@ -238,6 +247,7 @@ def create_app() -> Flask:
             forecast_rows=forecast_rows,
             outlook_cards=outlook_cards,
             overview_metrics=overview_metrics,
+            forecast_report=forecast_report,
             company_snapshot_rows=company_snapshot_rows,
             method_summary=method_summary,
             data_usage_summary=data_usage_summary,
@@ -308,7 +318,7 @@ def _build_market_context_chart(
     ]
     grouped_forecasts: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in forecast_rows:
-        grouped_forecasts[str(row["predict_type"]).lower()].append(dict(row))
+        grouped_forecasts[_canonical_predict_type(row)].append(dict(row))
 
     for rows in grouped_forecasts.values():
         rows.sort(key=lambda item: int(item["forecast_step"]))
@@ -421,7 +431,7 @@ def _build_outlook_cards(
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in forecast_rows:
-        grouped[str(row["predict_type"]).lower()].append(dict(row))
+        grouped[_canonical_predict_type(row)].append(dict(row))
 
     cards: list[dict[str, Any]] = []
     for predict_type, rows in sorted(grouped.items()):
@@ -529,6 +539,397 @@ def _build_outlook_cards(
     return tuple(cards)
 
 
+def _build_forecast_report(
+    *,
+    comparison_future_result: Any | None,
+    training_summary: Any | None,
+) -> dict[str, Any] | None:
+    if comparison_future_result is None or not comparison_future_result.rows:
+        return None
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in comparison_future_result.rows:
+        grouped[_canonical_predict_type(row)].append(dict(row))
+    for rows in grouped.values():
+        rows.sort(key=lambda item: int(item["forecast_step"]))
+
+    last_close = float(comparison_future_result.last_observed_close)
+    horizon_days = int(comparison_future_result.horizon_days)
+    model_summaries = []
+    for predict_type, rows in sorted(grouped.items()):
+        if not rows:
+            continue
+        first_row = rows[0]
+        last_row = rows[-1]
+        elapsed_values = [
+            float(row["step_elapsed_ms"])
+            for row in rows
+            if row.get("step_elapsed_ms") is not None
+            and float(row["step_elapsed_ms"]) == float(row["step_elapsed_ms"])
+        ]
+        total_ms = float(sum(elapsed_values)) if elapsed_values else None
+        avg_ms = float(total_ms / len(elapsed_values)) if elapsed_values else None
+        min_ms = min(elapsed_values) if elapsed_values else None
+        max_ms = max(elapsed_values) if elapsed_values else None
+        guardrail_count = sum(
+            1 for row in rows if bool(row.get("prediction_constraint_applied"))
+        )
+        final_price = float(last_row["predicted_close"])
+        cumulative_return_pct = _compute_delta_pct(
+            value=final_price,
+            base_close=last_close,
+        ) or 0.0
+        up_count = sum(1 for row in rows if int(row.get("predicted_direction", 0)) == 1)
+        cumulative_cap = _resolve_cumulative_return_cap(rows)
+        limited_by_cap = _is_limited_by_cap(
+            cumulative_return_pct=cumulative_return_pct,
+            cumulative_cap=cumulative_cap,
+        )
+        proxy_methods = sorted(
+            {
+                str(row["price_proxy_method"])
+                for row in rows
+                if row.get("price_proxy_method")
+            }
+        )
+        uses_price_proxy = any(bool(row.get("is_price_proxy")) for row in rows)
+        formatted_cumulative_return = formatPercent(cumulative_return_pct / 100.0)
+        model_summaries.append(
+            {
+                "predict_type": predict_type,
+                "short_name": "LSTM" if predict_type == "normal" else "VQC",
+                "display_name": "LSTM - Keras" if predict_type == "normal" else "VQC - Qiskit",
+                "final_label": (
+                    "LSTM final price" if predict_type == "normal" else "VQC estimated price"
+                ),
+                "family": str(first_row.get("model_family", "")),
+                "final_price": final_price,
+                "cumulative_return_pct": cumulative_return_pct,
+                "cumulative_return_text": formatted_cumulative_return,
+                "cumulative_return_tone": (
+                    "positive" if cumulative_return_pct > 0 else "negative" if cumulative_return_pct < 0 else "neutral"
+                ),
+                "guardrail_count": guardrail_count,
+                "constraint_rate": guardrail_count / len(rows) if rows else 0.0,
+                "up_rate": up_count / len(rows) if rows else 0.0,
+                "total_ms": total_ms,
+                "avg_ms": avg_ms,
+                "min_ms": min_ms,
+                "max_ms": max_ms,
+                "row_count": len(rows),
+                "horizon_steps": horizon_days,
+                "uses_price_proxy": uses_price_proxy,
+                "price_proxy_label": (
+                    f"Yes, {', '.join(proxy_methods)}"
+                    if proxy_methods
+                    else "Yes, volatility proxy"
+                    if uses_price_proxy
+                    else "No"
+                ),
+                "cumulative_cap": cumulative_cap,
+                "limited_by_cap": limited_by_cap,
+                "total_runtime_text": formatMs(total_ms),
+                "avg_runtime_text": formatMs(avg_ms),
+                "min_runtime_text": formatMs(min_ms),
+                "max_runtime_text": formatMs(max_ms),
+                "up_rate_text": _format_unsigned_percent(
+                    up_count / len(rows) if rows else None
+                ),
+                "guardrail_text": f"{guardrail_count}/{horizon_days}",
+                "price_proxy_badge": "Price proxy" if uses_price_proxy else "",
+                "limit_badge": "Limited by cap" if limited_by_cap else "",
+            }
+        )
+
+    summary_by_type = {item["predict_type"]: item for item in model_summaries}
+    normal = summary_by_type.get("normal")
+    quant = summary_by_type.get("quant")
+    timing_ratio = None
+    if normal and quant and normal.get("avg_ms") and quant.get("avg_ms"):
+        timing_ratio = float(quant["avg_ms"] / normal["avg_ms"])
+    delta_time_ms = None
+    if normal and quant and normal.get("total_ms") is not None and quant.get("total_ms") is not None:
+        delta_time_ms = float(quant["total_ms"] or 0.0) - float(normal["total_ms"] or 0.0)
+
+    seed = 42
+    if training_summary is not None and training_summary.keras is not None:
+        seed = 42
+
+    metric_cards: list[dict[str, str]] = []
+    for item in model_summaries:
+        metric_cards.append(
+            {
+                "label": item["final_label"],
+                "value": f"${float(item['final_price']):.2f}",
+                "detail": f"{item['cumulative_return_text']} vs last close",
+            }
+        )
+    metric_cards.append(
+        {
+            "label": "Razao tempo VQC/LSTM",
+            "value": formatRatio(timing_ratio),
+            "detail": "per step",
+        }
+    )
+    for item in model_summaries:
+        metric_cards.append(
+            {
+                "label": f"{item['short_name']} - guardrails",
+                "value": item["guardrail_text"],
+                "detail": f"{float(item['constraint_rate']):.0%} of rows",
+            }
+        )
+    metric_cards.append(
+        {
+            "label": "Lookback",
+            "value": f"{int(comparison_future_result.lookback)}",
+            "detail": "session window",
+        }
+    )
+
+    executive_cards = _build_executive_summary_cards(
+        normal=normal,
+        quant=quant,
+        horizon_days=horizon_days,
+        timing_ratio=timing_ratio,
+    )
+    alerts = _build_forecast_alerts(
+        model_summaries=model_summaries,
+        horizon_days=horizon_days,
+        timing_ratio=timing_ratio,
+        normal=normal,
+        quant=quant,
+    )
+    timing_copy = _build_timing_copy(normal=normal, quant=quant, timing_ratio=timing_ratio)
+    detailed_rows = _build_model_comparison_rows(model_summaries)
+    return {
+        "symbol": comparison_future_result.symbol,
+        "last_observed_close": last_close,
+        "horizon_days": horizon_days,
+        "seed": seed,
+        "metric_cards": tuple(metric_cards),
+        "executive_cards": tuple(executive_cards),
+        "model_summaries": tuple(model_summaries),
+        "detailed_rows": tuple(detailed_rows),
+        "alerts": tuple(alerts),
+        "timing_ratio": timing_ratio,
+        "timing_ratio_text": formatRatio(timing_ratio),
+        "delta_time_text": formatSeconds(delta_time_ms),
+        "timing_copy": timing_copy,
+        "uses_price_proxy": bool(quant and quant.get("uses_price_proxy")),
+        "same_capped_return": bool(
+            normal
+            and quant
+            and normal.get("limited_by_cap")
+            and quant.get("limited_by_cap")
+            and abs(
+                float(normal.get("cumulative_return_pct") or 0.0)
+                - float(quant.get("cumulative_return_pct") or 0.0)
+            )
+            < 0.01
+        ),
+    }
+
+
+def _build_executive_summary_cards(
+    *,
+    normal: dict[str, Any] | None,
+    quant: dict[str, Any] | None,
+    horizon_days: int,
+    timing_ratio: float | None,
+) -> list[dict[str, str]]:
+    cards = [
+        {
+            "label": "Total LSTM runtime",
+            "value": normal["total_runtime_text"] if normal else "N/A",
+            "detail": f"{normal['avg_runtime_text']} per step" if normal else "Keras regression",
+            "tone": "neutral",
+        },
+        {
+            "label": "Total VQC runtime",
+            "value": quant["total_runtime_text"] if quant else "N/A",
+            "detail": f"{quant['avg_runtime_text']} per step" if quant else "Qiskit direction model",
+            "tone": "cost" if timing_ratio is not None and timing_ratio > 10.0 else "neutral",
+        },
+        {
+            "label": "Runtime ratio",
+            "value": formatRatio(timing_ratio),
+            "detail": "VQC / LSTM per step",
+            "tone": "cost" if timing_ratio is not None and timing_ratio > 10.0 else "neutral",
+        },
+        {
+            "label": "Forecast horizon",
+            "value": f"{horizon_days}",
+            "detail": "business days",
+            "tone": "neutral",
+        },
+    ]
+    for model in (normal, quant):
+        if not model:
+            continue
+        cards.append(
+            {
+                "label": f"{model['short_name']} cumulative return",
+                "value": model["cumulative_return_text"],
+                "detail": "Limited by cap" if model["limited_by_cap"] else "vs last observed close",
+                "tone": model["cumulative_return_tone"],
+            }
+        )
+    return cards
+
+
+def _build_forecast_alerts(
+    *,
+    model_summaries: list[dict[str, Any]],
+    horizon_days: int,
+    timing_ratio: float | None,
+    normal: dict[str, Any] | None,
+    quant: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    high_guardrail_models = [
+        item["short_name"]
+        for item in model_summaries
+        if item["guardrail_count"] >= max(3, int(horizon_days * 0.3))
+    ]
+    if high_guardrail_models:
+        alerts.append(
+            {
+                "tone": "warning",
+                "title": "Guardrail activity is elevated",
+                "message": (
+                    "Warning: many steps activated volatility guardrails. Final prices "
+                    "reflect the cumulative cap and may not represent the models' "
+                    "unconstrained predictions."
+                ),
+            }
+        )
+
+    inconsistent_models = [
+        item["short_name"]
+        for item in model_summaries
+        if item["guardrail_count"] > horizon_days
+    ]
+    if inconsistent_models:
+        alerts.append(
+            {
+                "tone": "note",
+                "title": "Guardrail count exceeds horizon",
+                "message": (
+                    "Note: guardrail activations exceed the displayed forecast horizon. "
+                    "Verify whether this metric represents internal activations, "
+                    "accumulated windows, or multiple simulations."
+                ),
+            }
+        )
+
+    if timing_ratio is not None and timing_ratio > 10.0:
+        alerts.append(
+            {
+                "tone": "cost",
+                "title": "Computational cost",
+                "message": (
+                    f"The VQC is {formatRatio(timing_ratio)} slower than the LSTM "
+                    "per step, which is expected for circuit execution and bitstring "
+                    "interpretation."
+                ),
+            }
+        )
+
+    if normal and quant and normal.get("limited_by_cap") and quant.get("limited_by_cap"):
+        if abs(
+            float(normal.get("cumulative_return_pct") or 0.0)
+            - float(quant.get("cumulative_return_pct") or 0.0)
+        ) < 0.01:
+            alerts.append(
+                {
+                    "tone": "note",
+                    "title": "Equal returns are cap-driven",
+                    "message": (
+                        "Both models show the same cumulative return because the cap "
+                        "was reached. This does not mean both models produced the same "
+                        "unconstrained forecast."
+                    ),
+                }
+            )
+
+    if quant and quant.get("uses_price_proxy"):
+        alerts.append(
+            {
+                "tone": "proxy",
+                "title": "VQC uses a price proxy",
+                "message": (
+                    "The VQC does not directly predict price in this view. It predicts "
+                    "movement direction or volatility, which is converted into an "
+                    "approximate price estimate."
+                ),
+            }
+        )
+    return alerts
+
+
+def _build_model_comparison_rows(
+    model_summaries: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "model": item["display_name"],
+            "family": item["family"] or "N/A",
+            "total_runtime": item["total_runtime_text"],
+            "avg_runtime": item["avg_runtime_text"],
+            "min_runtime": item["min_runtime_text"],
+            "max_runtime": item["max_runtime_text"],
+            "up_rate": item["up_rate_text"],
+            "cumulative_return": item["cumulative_return_text"],
+            "guardrails": item["guardrail_text"],
+            "price_proxy": item["price_proxy_label"],
+            "tone": item["cumulative_return_tone"],
+            "limited_by_cap": item["limited_by_cap"],
+            "uses_price_proxy": item["uses_price_proxy"],
+        }
+        for item in model_summaries
+    ]
+
+
+def _resolve_cumulative_return_cap(rows: list[dict[str, Any]]) -> float:
+    caps = [
+        float(row["dynamic_cumulative_return_cap"])
+        for row in rows
+        if row.get("dynamic_cumulative_return_cap") is not None
+        and float(row["dynamic_cumulative_return_cap"]) == float(row["dynamic_cumulative_return_cap"])
+    ]
+    return max(caps) if caps else DEFAULT_CUMULATIVE_RETURN_CAP
+
+
+def _is_limited_by_cap(
+    *,
+    cumulative_return_pct: float,
+    cumulative_cap: float,
+) -> bool:
+    return abs(abs(cumulative_return_pct) / 100.0 - cumulative_cap) <= 0.001
+
+
+def _build_timing_copy(
+    *,
+    normal: dict[str, Any] | None,
+    quant: dict[str, Any] | None,
+    timing_ratio: float | None,
+) -> str:
+    if not normal or not quant:
+        return "Timing per step is unavailable for this comparison window."
+    if normal.get("avg_ms") is None or quant.get("avg_ms") is None:
+        return "Timing per step is unavailable for this comparison window."
+    delta_time_ms = float(quant["total_ms"] or 0.0) - float(normal["total_ms"] or 0.0)
+    return (
+        f"The VQC is approximately {formatRatio(timing_ratio)} slower than the "
+        f"LSTM per step. Over {int(normal['horizon_steps'])} steps, the total "
+        f"runtime difference is approximately {formatSeconds(delta_time_ms)}. "
+        "This is expected because each VQC step may involve running a variational "
+        "quantum circuit, sampler execution, transpilation, and bitstring "
+        "interpretation, while the LSTM mainly performs optimized matrix operations."
+    )
+
+
 def _build_company_snapshot_rows(
     *,
     supported_symbols: tuple[str, ...],
@@ -580,7 +981,7 @@ def _build_company_snapshot_rows(
 
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in result.rows:
-            grouped[str(row["predict_type"]).lower()].append(dict(row))
+            grouped[_canonical_predict_type(row)].append(dict(row))
 
         for predict_type_rows in grouped.values():
             predict_type_rows.sort(key=lambda value: int(value["forecast_step"]))
@@ -651,7 +1052,7 @@ def _build_overview_metrics(
     if comparison_future_result is not None:
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in comparison_future_result.rows:
-            grouped[str(row["predict_type"]).lower()].append(dict(row))
+            grouped[_canonical_predict_type(row)].append(dict(row))
         if grouped.get("normal"):
             grouped["normal"].sort(key=lambda item: int(item["forecast_step"]))
             standard_day_one = float(grouped["normal"][0]["predicted_close"])
@@ -804,6 +1205,58 @@ def _describe_predict_type_availability(
     if quant_rows:
         return "quantum only"
     return "unavailable"
+
+
+def _canonical_predict_type(row: dict[str, Any]) -> str:
+    model_family = str(row.get("model_family", "")).lower()
+    model_name = str(row.get("model_name", "")).lower()
+    is_price_proxy = bool(row.get("is_price_proxy", False))
+    if "quantum" in model_family or "vqc" in model_family or "quantum" in model_name:
+        return "quant"
+    if is_price_proxy:
+        return "quant"
+    if "keras" in model_family or "lstm" in model_family or "lstm" in model_name:
+        return "normal"
+    return str(row.get("predict_type", "")).lower()
+
+
+def _with_canonical_predict_type(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    payload.setdefault("stored_predict_type", payload.get("predict_type"))
+    payload["predict_type"] = _canonical_predict_type(payload)
+    return payload
+
+
+def formatMs(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    if abs(value) >= 1000.0:
+        return formatSeconds(value)
+    return f"{value:.1f}ms"
+
+
+def formatSeconds(value_ms: float | None) -> str:
+    if value_ms is None:
+        return "N/A"
+    return f"{value_ms / 1000.0:.2f}s"
+
+
+def formatPercent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value * 100.0:+.1f}%"
+
+
+def _format_unsigned_percent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value * 100.0:.1f}%"
+
+
+def formatRatio(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.1f}x"
 
 
 def _compute_delta_pct(*, value: float | None, base_close: float | None) -> float | None:

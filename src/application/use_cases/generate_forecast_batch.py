@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import os
 import sys
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -57,6 +58,47 @@ from src.infrastructure.storage.s3_raw_store import S3RawStore
 DEFAULT_SYMBOLS = ("NVDA", "AMD", "TSM", "ASML", "QCOM")
 
 
+def _print_timing_summary(
+    *,
+    symbol: str,
+    normal_elapsed_ms: float | None,
+    normal_per_step_ms: list[float] | None,
+    quantum_elapsed_ms: float | None,
+    quantum_per_step_ms: list[float] | None,
+    timing_ratio: float | None,
+) -> None:
+    """Print per-symbol model timing to stdout during batch generation."""
+    separator = "-" * 56
+    print(f"\n{separator}")
+    print(f"  Timing report - {symbol.upper()}")
+    print(separator)
+
+    if normal_per_step_ms:
+        normal_avg = sum(normal_per_step_ms) / len(normal_per_step_ms)
+        print(f"  LSTM  total : {normal_elapsed_ms:>10.1f} ms")
+        print(
+            "        avg/step: "
+            f"{normal_avg:>8.2f} ms  |  "
+            f"min: {min(normal_per_step_ms):.2f}  "
+            f"max: {max(normal_per_step_ms):.2f}"
+        )
+
+    if quantum_per_step_ms:
+        quantum_avg = sum(quantum_per_step_ms) / len(quantum_per_step_ms)
+        print(f"  VQC   total : {quantum_elapsed_ms:>10.1f} ms")
+        print(
+            "        avg/step: "
+            f"{quantum_avg:>8.2f} ms  |  "
+            f"min: {min(quantum_per_step_ms):.2f}  "
+            f"max: {max(quantum_per_step_ms):.2f}"
+        )
+
+    if timing_ratio is not None:
+        print(f"  Ratio VQC/LSTM: {timing_ratio:.1f}x")
+
+    print(separator)
+
+
 @dataclass(frozen=True)
 class ForecastBatchRequest:
     symbols: tuple[str, ...]
@@ -89,7 +131,12 @@ class ForecastAssetArtifact:
     last_observed_close: float
     normal_model_local_path: str | None
     quantum_model_local_path: str | None
-    forecast_summary: dict[str, dict[str, float | int | bool]]
+    normal_elapsed_ms: float | None
+    normal_per_step_ms: list[float] | None
+    quantum_elapsed_ms: float | None
+    quantum_per_step_ms: list[float] | None
+    timing_ratio: float | None
+    forecast_summary: dict[str, dict[str, Any]]
     local_path: str
     s3_uri: str | None
     report_local_path: str
@@ -121,6 +168,19 @@ class ForecastBatchResult:
             "asset_count": len(self.assets),
             "assets": [asdict(asset) for asset in self.assets],
         }
+
+
+@dataclass(frozen=True)
+class ForecastStepStabilizationResult:
+    predicted_close: float
+    raw_model_close: float
+    predicted_scaled: float | None
+    prediction_return_cap: float
+    prediction_constraint_applied: bool
+    prediction_constraint_method: str | None
+    hit_lower_band: bool
+    hit_upper_band: bool
+    dynamic_cumulative_return_cap: float
 
 
 class GenerateForecastBatchUseCase:
@@ -175,6 +235,11 @@ class GenerateForecastBatchUseCase:
             normal_model_local_path: str | None = None
             quantum_model_local_path: str | None = None
             predict_types: list[str] = []
+            normal_elapsed_ms: float | None = None
+            normal_per_step_ms: list[float] | None = None
+            quantum_elapsed_ms: float | None = None
+            quantum_per_step_ms: list[float] | None = None
+            timing_ratio: float | None = None
 
             if request.include_normal:
                 normal_metadata = self._resolve_keras_model_metadata(
@@ -190,18 +255,19 @@ class GenerateForecastBatchUseCase:
                     normal_model_local_path,
                     compile=False,
                 )
-                combined_rows.extend(
-                    self._build_normal_rows(
-                        raw_frame=raw_frame,
-                        request=request,
-                        symbol=symbol,
-                        generated_at_utc=generated_at_utc,
-                        generated_at_token=generated_at_token,
-                        model=normal_model,
-                        scaler_metadata=scaler_metadata,
-                        model_metadata=normal_metadata,
-                    )
+                normal_start = time.perf_counter()
+                normal_rows, normal_per_step_ms = self._build_normal_rows_timed(
+                    raw_frame=raw_frame,
+                    request=request,
+                    symbol=symbol,
+                    generated_at_utc=generated_at_utc,
+                    generated_at_token=generated_at_token,
+                    model=normal_model,
+                    scaler_metadata=scaler_metadata,
+                    model_metadata=normal_metadata,
                 )
+                normal_elapsed_ms = (time.perf_counter() - normal_start) * 1_000
+                combined_rows.extend(normal_rows)
                 predict_types.append("normal")
 
             if request.include_quantum:
@@ -222,26 +288,56 @@ class GenerateForecastBatchUseCase:
                     model_payload=quantum_payload,
                     request=request,
                 )
-                combined_rows.extend(
-                    self._build_quantum_rows(
-                        raw_frame=raw_frame,
-                        request=request,
-                        symbol=symbol,
-                        generated_at_utc=generated_at_utc,
-                        generated_at_token=generated_at_token,
-                        model=quantum_model,
-                        scaler_metadata=scaler_metadata,
-                        quantum_bundle=quantum_bundle,
-                        model_metadata=quantum_metadata,
-                    )
+                quantum_start = time.perf_counter()
+                quantum_rows, quantum_per_step_ms = self._build_quantum_rows_timed(
+                    raw_frame=raw_frame,
+                    request=request,
+                    symbol=symbol,
+                    generated_at_utc=generated_at_utc,
+                    generated_at_token=generated_at_token,
+                    model=quantum_model,
+                    scaler_metadata=scaler_metadata,
+                    quantum_bundle=quantum_bundle,
+                    model_metadata=quantum_metadata,
                 )
+                quantum_elapsed_ms = (time.perf_counter() - quantum_start) * 1_000
+                combined_rows.extend(quantum_rows)
                 predict_types.append("quant")
+
+            if normal_per_step_ms and quantum_per_step_ms:
+                normal_average = sum(normal_per_step_ms) / len(normal_per_step_ms)
+                quantum_average = sum(quantum_per_step_ms) / len(quantum_per_step_ms)
+                timing_ratio = quantum_average / normal_average if normal_average > 0 else None
+
+            _print_timing_summary(
+                symbol=symbol,
+                normal_elapsed_ms=normal_elapsed_ms,
+                normal_per_step_ms=normal_per_step_ms,
+                quantum_elapsed_ms=quantum_elapsed_ms,
+                quantum_per_step_ms=quantum_per_step_ms,
+                timing_ratio=timing_ratio,
+            )
 
             future_predict_frame = pd.DataFrame(combined_rows)
             future_predict_frame = future_predict_frame.sort_values(
                 by=["forecast_step", "predict_type"],
             ).reset_index(drop=True)
             forecast_summary = self._summarize_future_predict_frame(future_predict_frame)
+            forecast_summary["_timing"] = {
+                "normal_elapsed_ms": normal_elapsed_ms,
+                "normal_per_step_ms_mean": (
+                    sum(normal_per_step_ms) / len(normal_per_step_ms)
+                    if normal_per_step_ms
+                    else None
+                ),
+                "quantum_elapsed_ms": quantum_elapsed_ms,
+                "quantum_per_step_ms_mean": (
+                    sum(quantum_per_step_ms) / len(quantum_per_step_ms)
+                    if quantum_per_step_ms
+                    else None
+                ),
+                "timing_ratio_quant_over_normal": timing_ratio,
+            }
 
             relative_path = self._build_future_predict_relative_path(
                 source=request.source,
@@ -304,6 +400,11 @@ class GenerateForecastBatchUseCase:
                     ),
                     normal_model_local_path=normal_model_local_path,
                     quantum_model_local_path=quantum_model_local_path,
+                    normal_elapsed_ms=normal_elapsed_ms,
+                    normal_per_step_ms=normal_per_step_ms,
+                    quantum_elapsed_ms=quantum_elapsed_ms,
+                    quantum_per_step_ms=quantum_per_step_ms,
+                    timing_ratio=timing_ratio,
                     forecast_summary=forecast_summary,
                     local_path=str(local_path),
                     s3_uri=s3_uri,
@@ -600,6 +701,9 @@ class GenerateForecastBatchUseCase:
                     "model_local_path": str(asset_payload["model_local_path"]),
                     "training_manifest_local_path": str(manifest_path),
                     "training_generated_at_utc": str(payload.get("generated_at_utc")),
+                    "prediction_target_mode": str(
+                        payload.get("request", {}).get("prediction_target_mode", "price")
+                    ),
                 }
 
         fallback_path = self._models_root_dir / expected_model_name
@@ -608,6 +712,7 @@ class GenerateForecastBatchUseCase:
                 "model_local_path": str(fallback_path),
                 "training_manifest_local_path": None,
                 "training_generated_at_utc": None,
+                "prediction_target_mode": "price",
             }
 
         raise FileNotFoundError(
@@ -665,6 +770,9 @@ class GenerateForecastBatchUseCase:
                 "model_local_path": str(model_path),
                 "training_manifest_local_path": str(manifest_path),
                 "training_generated_at_utc": str(payload.get("generated_at_utc")),
+                "prediction_target_mode": str(
+                    payload.get("request", {}).get("prediction_target_mode", "price")
+                ),
             }
 
         return None
@@ -749,6 +857,13 @@ class GenerateForecastBatchUseCase:
 
     def _build_normal_rows(
         self,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        rows, _ = self._build_normal_rows_timed(**kwargs)
+        return rows
+
+    def _build_normal_rows_timed(
+        self,
         *,
         raw_frame: pd.DataFrame,
         request: ForecastBatchRequest,
@@ -758,7 +873,7 @@ class GenerateForecastBatchUseCase:
         model: Any,
         scaler_metadata: dict[str, float],
         model_metadata: dict[str, str | None],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[float]]:
         working = raw_frame.loc[:, ["date", request.target_column]].dropna().copy()
         working["date"] = pd.to_datetime(working["date"])
         working = working.sort_values("date").reset_index(drop=True)
@@ -785,38 +900,43 @@ class GenerateForecastBatchUseCase:
         )
 
         rows: list[dict[str, Any]] = []
+        per_step_ms: list[float] = []
         for step, forecast_date in enumerate(forecast_dates, start=1):
+            step_start = time.perf_counter()
             input_window_start_date = pd.Timestamp(window_dates[0])
             input_window_end_date = pd.Timestamp(window_dates[-1])
             input_window_end_close = float(raw_window[-1])
 
             prediction_input = scaled_window.reshape(1, request.lookback, 1)
             predicted_scaled = float(model.predict(prediction_input, verbose=0).reshape(-1)[0])
-            predicted_close = float(
-                self._inverse_scale_array(
-                    np.asarray([predicted_scaled], dtype=np.float32),
-                    min_offset=scaler_metadata["min_offset"],
-                    scale=scaler_metadata["scale"],
-                )[0]
+            model_prediction_target_mode = str(
+                model_metadata.get("prediction_target_mode") or "price"
             )
+            if model_prediction_target_mode == "return":
+                predicted_close = float(input_window_end_close * (1.0 + predicted_scaled))
+            else:
+                predicted_close = float(
+                    self._inverse_scale_array(
+                        np.asarray([predicted_scaled], dtype=np.float32),
+                        min_offset=scaler_metadata["min_offset"],
+                        scale=scaler_metadata["scale"],
+                    )[0]
+                )
             guardrail = apply_standard_forecast_guardrail(
                 raw_model_close=predicted_close,
                 current_close=input_window_end_close,
                 recent_window=raw_window.astype(np.float64),
             )
-            predicted_close = guardrail.constrained_close
-            horizon_clamped_close, horizon_clamp_applied = self._apply_cumulative_horizon_band(
-                predicted_close=predicted_close,
+            stabilized = self._stabilize_forecast_step(
+                guardrail=guardrail,
+                recent_window=raw_window.astype(np.float64),
                 last_observed_close=last_observed_close,
+                forecast_step=step,
+                horizon_days=request.horizon_days,
+                scaler_metadata=scaler_metadata,
             )
-            predicted_close = horizon_clamped_close
-            predicted_scaled = float(
-                self._scale_array(
-                    np.asarray([predicted_close], dtype=np.float32),
-                    min_offset=scaler_metadata["min_offset"],
-                    scale=scaler_metadata["scale"],
-                )[0]
-            )
+            predicted_close = stabilized.predicted_close
+            predicted_scaled = float(stabilized.predicted_scaled or 0.0)
             predicted_direction = int(predicted_close > input_window_end_close)
             predicted_step_return = self._safe_return(
                 current_value=predicted_close,
@@ -829,49 +949,52 @@ class GenerateForecastBatchUseCase:
 
             observed_points_in_window = max(request.lookback - (step - 1), 0)
             predicted_points_in_window = min(step - 1, request.lookback)
-            rows.append(
-                self._build_future_predict_row(
-                    source=request.source,
-                    symbol=symbol,
-                    target_column=request.target_column,
-                    extraction_date=request.extraction_date,
-                    generated_at_utc=generated_at_utc,
-                    generated_at_token=generated_at_token,
-                    predict_type="normal",
-                    model_family="keras_lstm_regression",
-                    model_name=Path(str(model_metadata["model_local_path"])).stem,
-                    model_local_path=str(model_metadata["model_local_path"]),
-                    training_manifest_local_path=model_metadata["training_manifest_local_path"],
-                    training_generated_at_utc=model_metadata["training_generated_at_utc"],
-                    lookback=request.lookback,
-                    horizon_days=request.horizon_days,
-                    forecast_step=step,
-                    forecast_date=forecast_date,
-                    predicted_close=predicted_close,
-                    predicted_scaled=predicted_scaled,
-                    predicted_direction=predicted_direction,
-                    raw_model_predicted_close=guardrail.raw_model_close,
-                    prediction_constraint_applied=guardrail.applied or horizon_clamp_applied,
-                    prediction_constraint_method=self._join_constraint_methods(
-                        guardrail.method,
-                        "cumulative_horizon_return_band" if horizon_clamp_applied else None,
-                    ),
-                    prediction_return_cap=guardrail.return_cap,
-                    predicted_step_return=predicted_step_return,
-                    horizon_return_from_last_observed=horizon_return,
-                    price_proxy_return=None,
-                    last_observed_date=last_observed_date,
-                    last_observed_close=last_observed_close,
-                    input_window_start_date=input_window_start_date,
-                    input_window_end_date=input_window_end_date,
-                    input_window_end_close=input_window_end_close,
-                    input_window_end_origin="observed" if step == 1 else "predicted",
-                    observed_points_in_window=observed_points_in_window,
-                    predicted_points_in_window=predicted_points_in_window,
-                    is_price_proxy=False,
-                    price_proxy_method=None,
-                )
+            step_elapsed_ms = (time.perf_counter() - step_start) * 1_000
+            per_step_ms.append(step_elapsed_ms)
+            row = self._build_future_predict_row(
+                source=request.source,
+                symbol=symbol,
+                target_column=request.target_column,
+                extraction_date=request.extraction_date,
+                generated_at_utc=generated_at_utc,
+                generated_at_token=generated_at_token,
+                predict_type="normal",
+                model_family="keras_lstm_regression",
+                model_name=Path(str(model_metadata["model_local_path"])).stem,
+                model_local_path=str(model_metadata["model_local_path"]),
+                training_manifest_local_path=model_metadata["training_manifest_local_path"],
+                training_generated_at_utc=model_metadata["training_generated_at_utc"],
+                lookback=request.lookback,
+                horizon_days=request.horizon_days,
+                forecast_step=step,
+                forecast_date=forecast_date,
+                predicted_close=predicted_close,
+                predicted_scaled=predicted_scaled,
+                predicted_direction=predicted_direction,
+                raw_model_predicted_close=stabilized.raw_model_close,
+                prediction_constraint_applied=stabilized.prediction_constraint_applied,
+                prediction_constraint_method=stabilized.prediction_constraint_method,
+                prediction_return_cap=stabilized.prediction_return_cap,
+                hit_lower_band=stabilized.hit_lower_band,
+                hit_upper_band=stabilized.hit_upper_band,
+                dynamic_cumulative_return_cap=stabilized.dynamic_cumulative_return_cap,
+                predicted_step_return=predicted_step_return,
+                horizon_return_from_last_observed=horizon_return,
+                price_proxy_return=None,
+                last_observed_date=last_observed_date,
+                last_observed_close=last_observed_close,
+                input_window_start_date=input_window_start_date,
+                input_window_end_date=input_window_end_date,
+                input_window_end_close=input_window_end_close,
+                input_window_end_origin="observed" if step == 1 else "predicted",
+                observed_points_in_window=observed_points_in_window,
+                predicted_points_in_window=predicted_points_in_window,
+                is_price_proxy=False,
+                price_proxy_method=None,
             )
+            row["model_prediction_target_mode"] = model_prediction_target_mode
+            row["step_elapsed_ms"] = round(step_elapsed_ms, 3)
+            rows.append(row)
 
             raw_window = np.concatenate(
                 [raw_window[1:], np.asarray([predicted_close], dtype=np.float32)]
@@ -881,9 +1004,16 @@ class GenerateForecastBatchUseCase:
             )
             window_dates = window_dates[1:] + [forecast_date]
 
-        return rows
+        return rows, per_step_ms
 
     def _build_quantum_rows(
+        self,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        rows, _ = self._build_quantum_rows_timed(**kwargs)
+        return rows
+
+    def _build_quantum_rows_timed(
         self,
         *,
         raw_frame: pd.DataFrame,
@@ -895,7 +1025,7 @@ class GenerateForecastBatchUseCase:
         scaler_metadata: dict[str, float],
         quantum_bundle: dict[str, Any],
         model_metadata: dict[str, str | None],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[float]]:
         working = raw_frame.loc[:, ["date", request.target_column]].dropna().copy()
         working["date"] = pd.to_datetime(working["date"])
         working = working.sort_values("date").reset_index(drop=True)
@@ -917,7 +1047,9 @@ class GenerateForecastBatchUseCase:
         )
 
         rows: list[dict[str, Any]] = []
+        per_step_ms: list[float] = []
         for step, forecast_date in enumerate(forecast_dates, start=1):
+            step_start = time.perf_counter()
             input_window_start_date = pd.Timestamp(window_dates[0])
             input_window_end_date = pd.Timestamp(window_dates[-1])
             input_window_end_close = float(raw_window[-1])
@@ -937,7 +1069,11 @@ class GenerateForecastBatchUseCase:
                 model=model,
                 transformed_values=transformed_vector,
             )
-            proxy_return = self._compute_quantum_price_proxy_return(raw_window)
+            proxy_return = self._compute_quantum_price_proxy_return(
+                raw_window,
+                forecast_step=step,
+                horizon_days=request.horizon_days,
+            )
             raw_proxy_close = float(
                 input_window_end_close
                 * (1.0 + proxy_return if predicted_direction == 1 else 1.0 - proxy_return)
@@ -947,14 +1083,17 @@ class GenerateForecastBatchUseCase:
                 current_close=input_window_end_close,
                 recent_window=raw_window.astype(np.float64),
                 volatility_multiplier=2.0,
-                max_return_cap=0.05,
+                max_return_cap=0.035,
             )
-            predicted_close = guardrail.constrained_close
-            horizon_clamped_close, horizon_clamp_applied = self._apply_cumulative_horizon_band(
-                predicted_close=predicted_close,
+            stabilized = self._stabilize_forecast_step(
+                guardrail=guardrail,
+                recent_window=raw_window.astype(np.float64),
                 last_observed_close=last_observed_close,
+                forecast_step=step,
+                horizon_days=request.horizon_days,
+                scaler_metadata=None,
             )
-            predicted_close = horizon_clamped_close
+            predicted_close = stabilized.predicted_close
             predicted_direction = int(predicted_close > input_window_end_close)
             predicted_step_return = self._safe_return(
                 current_value=predicted_close,
@@ -967,58 +1106,60 @@ class GenerateForecastBatchUseCase:
 
             observed_points_in_window = max(request.lookback - (step - 1), 0)
             predicted_points_in_window = min(step - 1, request.lookback)
-            rows.append(
-                self._build_future_predict_row(
-                    source=request.source,
-                    symbol=symbol,
-                    target_column=request.target_column,
-                    extraction_date=request.extraction_date,
-                    generated_at_utc=generated_at_utc,
-                    generated_at_token=generated_at_token,
-                    predict_type="quant",
-                    model_family="quantum_vqc_direction_classifier",
-                    model_name=Path(str(model_metadata["model_local_path"])).stem,
-                    model_local_path=str(model_metadata["model_local_path"]),
-                    training_manifest_local_path=model_metadata["training_manifest_local_path"],
-                    training_generated_at_utc=model_metadata["training_generated_at_utc"],
-                    lookback=request.lookback,
-                    horizon_days=request.horizon_days,
-                    forecast_step=step,
-                    forecast_date=forecast_date,
-                    predicted_close=predicted_close,
-                    predicted_scaled=None,
-                    predicted_direction=predicted_direction,
-                    raw_model_predicted_close=raw_proxy_close,
-                    prediction_constraint_applied=guardrail.applied or horizon_clamp_applied,
-                    prediction_constraint_method=self._join_constraint_methods(
-                        guardrail.method,
-                        "cumulative_horizon_return_band" if horizon_clamp_applied else None,
-                    ),
-                    prediction_return_cap=guardrail.return_cap,
-                    predicted_step_return=predicted_step_return,
-                    horizon_return_from_last_observed=horizon_return,
-                    price_proxy_return=proxy_return,
-                    last_observed_date=last_observed_date,
-                    last_observed_close=last_observed_close,
-                    input_window_start_date=input_window_start_date,
-                    input_window_end_date=input_window_end_date,
-                    input_window_end_close=input_window_end_close,
-                    input_window_end_origin="observed" if step == 1 else "predicted",
-                    observed_points_in_window=observed_points_in_window,
-                    predicted_points_in_window=predicted_points_in_window,
-                    is_price_proxy=True,
-                    price_proxy_method=(
-                        "directional_return_proxy_mean_abs_10d_from_quant_signal"
-                    ),
-                )
+            step_elapsed_ms = (time.perf_counter() - step_start) * 1_000
+            per_step_ms.append(step_elapsed_ms)
+            row = self._build_future_predict_row(
+                source=request.source,
+                symbol=symbol,
+                target_column=request.target_column,
+                extraction_date=request.extraction_date,
+                generated_at_utc=generated_at_utc,
+                generated_at_token=generated_at_token,
+                predict_type="quant",
+                model_family="quantum_vqc_direction",
+                model_name=Path(str(model_metadata["model_local_path"])).stem,
+                model_local_path=str(model_metadata["model_local_path"]),
+                training_manifest_local_path=model_metadata["training_manifest_local_path"],
+                training_generated_at_utc=model_metadata["training_generated_at_utc"],
+                lookback=request.lookback,
+                horizon_days=request.horizon_days,
+                forecast_step=step,
+                forecast_date=forecast_date,
+                predicted_close=predicted_close,
+                predicted_scaled=None,
+                predicted_direction=predicted_direction,
+                raw_model_predicted_close=stabilized.raw_model_close,
+                prediction_constraint_applied=stabilized.prediction_constraint_applied,
+                prediction_constraint_method=stabilized.prediction_constraint_method,
+                prediction_return_cap=stabilized.prediction_return_cap,
+                hit_lower_band=stabilized.hit_lower_band,
+                hit_upper_band=stabilized.hit_upper_band,
+                dynamic_cumulative_return_cap=stabilized.dynamic_cumulative_return_cap,
+                predicted_step_return=predicted_step_return,
+                horizon_return_from_last_observed=horizon_return,
+                price_proxy_return=proxy_return,
+                last_observed_date=last_observed_date,
+                last_observed_close=last_observed_close,
+                input_window_start_date=input_window_start_date,
+                input_window_end_date=input_window_end_date,
+                input_window_end_close=input_window_end_close,
+                input_window_end_origin="observed" if step == 1 else "predicted",
+                observed_points_in_window=observed_points_in_window,
+                predicted_points_in_window=predicted_points_in_window,
+                is_price_proxy=True,
+                price_proxy_method=(
+                    "directional_return_proxy_shrunk_mean_abs_20d_from_quant_signal"
+                ),
             )
+            row["step_elapsed_ms"] = round(step_elapsed_ms, 3)
+            rows.append(row)
 
             raw_window = np.concatenate(
                 [raw_window[1:], np.asarray([predicted_close], dtype=np.float64)]
             )
             window_dates = window_dates[1:] + [forecast_date]
 
-        return rows
+        return rows, per_step_ms
 
     def _build_quantum_predictor(
         self,
@@ -1210,29 +1351,124 @@ class GenerateForecastBatchUseCase:
             return int(value)
         return int(value > 0.0)
 
-    def _compute_quantum_price_proxy_return(self, raw_window: np.ndarray) -> float:
+    def _compute_quantum_price_proxy_return(
+        self,
+        raw_window: np.ndarray,
+        *,
+        forecast_step: int = 1,
+        horizon_days: int = 30,
+    ) -> float:
         feature_engineer = GenerateFeatureDatasetUseCase
         daily_returns = feature_engineer._compute_daily_returns(raw_window)  # type: ignore[attr-defined]
         if len(daily_returns) == 0:
-            return 0.01
+            return 0.003
 
-        effective_periods = min(10, len(daily_returns))
+        effective_periods = min(20, len(daily_returns))
         proxy_return = float(np.mean(np.abs(daily_returns[-effective_periods:])))
-        return min(max(proxy_return, 0.0025), 0.05)
+        long_horizon_factor = 1.0 / (1.0 + 0.04 * max(forecast_step - 1, 0))
+        horizon_factor = min(1.0, np.sqrt(30.0 / max(float(horizon_days), 1.0)))
+        adjusted_return = proxy_return * 0.60 * long_horizon_factor * horizon_factor
+        dynamic_max = max(0.008, 0.025 * long_horizon_factor)
+        return float(min(max(adjusted_return, 0.0005), dynamic_max))
 
-    @staticmethod
     def _apply_cumulative_horizon_band(
+        self,
         *,
         predicted_close: float,
         last_observed_close: float,
-        max_cumulative_return: float = 0.35,
-    ) -> tuple[float, bool]:
+        recent_window: np.ndarray,
+        forecast_step: int,
+        horizon_days: int,
+    ) -> tuple[float, bool, bool, bool, float]:
         if abs(last_observed_close) <= 1e-8:
-            return float(predicted_close), False
+            return float(predicted_close), False, False, False, 0.0
+        max_cumulative_return = self._compute_dynamic_cumulative_return_cap(
+            recent_window=recent_window,
+            forecast_step=forecast_step,
+            horizon_days=horizon_days,
+        )
         lower_bound = max(last_observed_close * (1.0 - max_cumulative_return), 0.0)
         upper_bound = last_observed_close * (1.0 + max_cumulative_return)
         constrained = float(np.clip(predicted_close, lower_bound, upper_bound))
-        return constrained, abs(constrained - predicted_close) > 1e-9
+        applied = abs(constrained - predicted_close) > 1e-9
+        return (
+            constrained,
+            applied,
+            bool(applied and constrained <= lower_bound + 1e-9),
+            bool(applied and constrained >= upper_bound - 1e-9),
+            float(max_cumulative_return),
+        )
+
+    def _stabilize_forecast_step(
+        self,
+        *,
+        guardrail: Any,
+        recent_window: np.ndarray,
+        last_observed_close: float,
+        forecast_step: int,
+        horizon_days: int,
+        scaler_metadata: dict[str, float] | None,
+    ) -> ForecastStepStabilizationResult:
+        predicted_close = float(guardrail.constrained_close)
+        (
+            predicted_close,
+            horizon_clamp_applied,
+            hit_lower_band,
+            hit_upper_band,
+            dynamic_cumulative_return_cap,
+        ) = self._apply_cumulative_horizon_band(
+            predicted_close=predicted_close,
+            last_observed_close=last_observed_close,
+            recent_window=recent_window,
+            forecast_step=forecast_step,
+            horizon_days=horizon_days,
+        )
+        predicted_scaled = None
+        if scaler_metadata is not None:
+            predicted_scaled = float(
+                self._scale_array(
+                    np.asarray([predicted_close], dtype=np.float32),
+                    min_offset=scaler_metadata["min_offset"],
+                    scale=scaler_metadata["scale"],
+                )[0]
+            )
+        return ForecastStepStabilizationResult(
+            predicted_close=predicted_close,
+            raw_model_close=float(guardrail.raw_model_close),
+            predicted_scaled=predicted_scaled,
+            prediction_return_cap=float(guardrail.return_cap),
+            prediction_constraint_applied=bool(guardrail.applied or horizon_clamp_applied),
+            prediction_constraint_method=self._join_constraint_methods(
+                guardrail.method,
+                "dynamic_cumulative_horizon_return_band" if horizon_clamp_applied else None,
+            ),
+            hit_lower_band=hit_lower_band,
+            hit_upper_band=hit_upper_band,
+            dynamic_cumulative_return_cap=dynamic_cumulative_return_cap,
+        )
+
+    @staticmethod
+    def _compute_dynamic_cumulative_return_cap(
+        *,
+        recent_window: np.ndarray,
+        forecast_step: int,
+        horizon_days: int,
+    ) -> float:
+        daily_returns = GenerateFeatureDatasetUseCase._compute_daily_returns(recent_window)  # type: ignore[attr-defined]
+        if len(daily_returns) == 0:
+            realized_volatility = 0.012
+            realized_move = 0.01
+        else:
+            effective_periods = min(60, len(daily_returns))
+            effective_returns = daily_returns[-effective_periods:]
+            realized_volatility = float(np.std(effective_returns, ddof=0))
+            realized_move = float(np.mean(np.abs(effective_returns)))
+        time_scale = np.sqrt(max(float(forecast_step), 1.0))
+        horizon_scale = np.sqrt(max(float(horizon_days), 1.0) / 30.0)
+        volatility_cap = (2.6 * realized_volatility + 1.2 * realized_move) * time_scale
+        min_cap = min(0.22, 0.025 * time_scale * horizon_scale + 0.035)
+        max_cap = min(0.65, 0.18 + 0.018 * max(float(horizon_days), 1.0))
+        return float(min(max(volatility_cap, min_cap), max_cap))
 
     @staticmethod
     def _safe_return(*, current_value: float, reference_value: float) -> float:
@@ -1248,8 +1484,8 @@ class GenerateForecastBatchUseCase:
     @staticmethod
     def _summarize_future_predict_frame(
         frame: pd.DataFrame,
-    ) -> dict[str, dict[str, float | int | bool]]:
-        summary: dict[str, dict[str, float | int | bool]] = {}
+    ) -> dict[str, dict[str, Any]]:
+        summary: dict[str, dict[str, Any]] = {}
         if frame.empty:
             return summary
         for predict_type, group in frame.groupby("predict_type"):
@@ -1264,16 +1500,47 @@ class GenerateForecastBatchUseCase:
             )
             step_returns = ordered["predicted_step_return"].astype(float)
             up_rate = float(directions.mean()) if len(directions) else 0.0
+            close_diffs = closes.diff().dropna()
+            close_range_pct = (
+                float((closes.max() - closes.min()) / last_observed_close)
+                if abs(last_observed_close) > 1e-8
+                else 0.0
+            )
+            constraint_count = int(
+                ordered["prediction_constraint_applied"].astype(bool).sum()
+            )
+            row_count = int(len(ordered.index))
+            hit_lower_count = (
+                int(ordered["hit_lower_band"].astype(bool).sum())
+                if "hit_lower_band" in ordered.columns
+                else 0
+            )
+            hit_upper_count = (
+                int(ordered["hit_upper_band"].astype(bool).sum())
+                if "hit_upper_band" in ordered.columns
+                else 0
+            )
             summary[str(predict_type)] = {
-                "row_count": int(len(ordered.index)),
+                "row_count": row_count,
                 "up_rate": up_rate,
                 "up_count": int(directions.sum()),
                 "down_count": int((1 - directions).sum()),
                 "horizon_delta_pct": float(horizon_delta * 100.0),
                 "mean_abs_step_return_pct": float(step_returns.abs().mean() * 100.0),
                 "std_step_return_pct": float(step_returns.std(ddof=0) * 100.0),
-                "constraint_applied_count": int(
-                    ordered["prediction_constraint_applied"].astype(bool).sum()
+                "constraint_applied_count": constraint_count,
+                "constraint_rate": float(constraint_count / row_count) if row_count else 0.0,
+                "hit_lower_band": bool(hit_lower_count > 0),
+                "hit_lower_band_count": hit_lower_count,
+                "hit_upper_band": bool(hit_upper_count > 0),
+                "hit_upper_band_count": hit_upper_count,
+                "flat_path": bool(close_range_pct <= 0.005),
+                "monotonic_path": bool(
+                    len(close_diffs) > 0
+                    and (
+                        bool((close_diffs >= -1e-9).all())
+                        or bool((close_diffs <= 1e-9).all())
+                    )
                 ),
                 "degenerate_direction_path": bool(up_rate <= 0.05 or up_rate >= 0.95),
                 "uses_price_proxy": bool(ordered["is_price_proxy"].astype(bool).any()),
@@ -1288,7 +1555,7 @@ class GenerateForecastBatchUseCase:
         symbol: str,
         request: ForecastBatchRequest,
         generated_at_utc: str,
-        forecast_summary: dict[str, dict[str, float | int | bool]],
+        forecast_summary: dict[str, dict[str, Any]],
         normal_model_local_path: str | None,
         quantum_model_local_path: str | None,
         chart_local_path: Path,
@@ -1353,7 +1620,7 @@ class GenerateForecastBatchUseCase:
         symbol: str,
         request: ForecastBatchRequest,
         generated_at_utc: str,
-        forecast_summary: dict[str, dict[str, float | int | bool]],
+        forecast_summary: dict[str, dict[str, Any]],
         normal_model_local_path: str | None,
         quantum_model_local_path: str | None,
         chart_local_path: Path,
@@ -1366,6 +1633,14 @@ class GenerateForecastBatchUseCase:
         summary_table = self._build_forecast_summary_table(forecast_summary)
         warning_lines = self._build_forecast_warning_lines(forecast_summary)
         endpoint_table = self._build_forecast_endpoint_table(ordered)
+        visual_report = self._build_forecast_visual_report_markdown(
+            frame=ordered,
+            request=request,
+        )
+        timing_section = self._build_timing_report_section(
+            forecast_summary=forecast_summary,
+            steps=request.horizon_days,
+        )
 
         return f"""# Forecast Report - `{symbol.upper()}`
 
@@ -1378,6 +1653,8 @@ class GenerateForecastBatchUseCase:
 ---
 
 ## Executive Summary
+
+{visual_report}
 
 {summary_table}
 
@@ -1420,9 +1697,135 @@ class GenerateForecastBatchUseCase:
 | Quantum runtime mode | `{request.quantum_runtime_mode}` |
 | Quantum shots | `{request.quantum_shots}` |
 
+{timing_section}
+
 ---
 
 *Forecast report generated automatically by the forecast pipeline.*
+"""
+
+    @staticmethod
+    def _build_forecast_visual_report_markdown(
+        *,
+        frame: pd.DataFrame,
+        request: ForecastBatchRequest,
+    ) -> str:
+        if frame.empty:
+            return ""
+        last_observed_close = float(frame["last_observed_close"].iloc[0])
+        symbol = str(frame["symbol"].iloc[0]).upper()
+        sections = [
+            "### Forecast Control Report",
+            "",
+            f"**Ativo:** `{symbol}` - `${last_observed_close:.2f}`",
+            f"**Horizonte:** `{request.horizon_days}` dias",
+            "**Semente aleatoria:** `42`",
+            "",
+            "| Metric | Value | Detail |",
+            "|---|---:|---|",
+        ]
+        model_rows = []
+        for predict_type, group in frame.groupby("predict_type"):
+            ordered = group.sort_values("forecast_step")
+            final_close = float(ordered["predicted_close"].iloc[-1])
+            final_return_pct = (
+                (final_close / last_observed_close - 1.0) * 100.0
+                if abs(last_observed_close) > 1e-8
+                else 0.0
+            )
+            elapsed = (
+                ordered["step_elapsed_ms"].dropna().astype(float)
+                if "step_elapsed_ms" in ordered.columns
+                else pd.Series(dtype=float)
+            )
+            total_ms = float(elapsed.sum()) if len(elapsed) else None
+            avg_ms = float(elapsed.mean()) if len(elapsed) else None
+            guardrails = int(ordered["prediction_constraint_applied"].astype(bool).sum())
+            label = "LSTM" if str(predict_type).lower() == "normal" else "VQC"
+            sections.append(
+                f"| {label} - preco final | `${final_close:.2f}` | "
+                f"{final_return_pct:+.2f}% vs last |"
+            )
+            model_rows.append(
+                {
+                    "label": label,
+                    "family": str(ordered["model_family"].iloc[0]),
+                    "total_ms": total_ms,
+                    "avg_ms": avg_ms,
+                    "up_rate": float(ordered["predicted_direction"].astype(int).mean()),
+                    "return_pct": final_return_pct,
+                    "guardrails": guardrails,
+                    "row_count": int(len(ordered.index)),
+                    "price_proxy": bool(ordered["is_price_proxy"].astype(bool).any()),
+                }
+            )
+
+        normal = next((row for row in model_rows if row["label"] == "LSTM"), None)
+        quant = next((row for row in model_rows if row["label"] == "VQC"), None)
+        if normal and quant and normal["avg_ms"] and quant["avg_ms"]:
+            ratio = float(quant["avg_ms"] / normal["avg_ms"])
+            sections.append(f"| Razao tempo VQC/LSTM | `{ratio:.1f}x` | por step |")
+        for row in model_rows:
+            sections.append(
+                f"| {row['label']} - guardrails | "
+                f"`{row['guardrails']}/{row['row_count']}` | "
+                f"{(row['guardrails'] / row['row_count']):.0%} dos steps |"
+            )
+        sections.append(f"| Lookback | `{request.lookback}` | dias de janela |")
+        sections.extend(
+            [
+                "",
+                "| Model | Familia | Tempo total | Media/step | Up rate | Retorno acumulado | Guardrails ativos | Price proxy |",
+                "|---|---|---:|---:|---:|---:|---:|---|",
+            ]
+        )
+        for row in model_rows:
+            total_value = f"{float(row['total_ms']):.0f} ms" if row["total_ms"] is not None else "--"
+            avg_value = f"{float(row['avg_ms']):.1f} ms" if row["avg_ms"] is not None else "--"
+            sections.append(
+                f"| {row['label']} | `{row['family']}` | {total_value} | "
+                f"{avg_value} | {float(row['up_rate']) * 100.0:.1f}% | "
+                f"{float(row['return_pct']):+.2f}% | "
+                f"{row['guardrails']}/{row['row_count']} | "
+                f"{'Sim (volatility proxy)' if row['price_proxy'] else 'Nao (regressao direta)'} |"
+            )
+        sections.append("")
+        return "\n".join(sections)
+
+    @staticmethod
+    def _build_timing_report_section(
+        *,
+        forecast_summary: dict[str, dict[str, Any]],
+        steps: int,
+    ) -> str:
+        timing = forecast_summary.get("_timing", {})
+        normal_total = timing.get("normal_elapsed_ms")
+        normal_avg = timing.get("normal_per_step_ms_mean")
+        quantum_total = timing.get("quantum_elapsed_ms")
+        quantum_avg = timing.get("quantum_per_step_ms_mean")
+        ratio = timing.get("timing_ratio_quant_over_normal")
+        if (
+            normal_total is None
+            or normal_avg is None
+            or quantum_total is None
+            or quantum_avg is None
+            or ratio is None
+        ):
+            return ""
+
+        return f"""
+---
+
+## Timing Report
+
+| Model | Total (ms) | Average per step (ms) | Steps |
+|---|---:|---:|---:|
+| LSTM (normal) | {float(normal_total):.1f} | {float(normal_avg):.2f} | {steps} |
+| VQC (quant) | {float(quantum_total):.1f} | {float(quantum_avg):.2f} | {steps} |
+
+> **VQC / LSTM ratio:** {float(ratio):.1f}x
+> The VQC path runs variational quantum circuit inference per step, while the
+> LSTM path runs one matrix-forward pass per step.
 """
 
     def _build_unified_forecast_report_markdown(
@@ -1637,13 +2040,15 @@ class GenerateForecastBatchUseCase:
 
     @staticmethod
     def _build_forecast_summary_table(
-        forecast_summary: dict[str, dict[str, float | int | bool]],
+        forecast_summary: dict[str, dict[str, Any]],
     ) -> str:
         lines = [
-            "| Type | Rows | Up rate | Up/Down | Horizon delta | Mean abs step return | Step return std | Constraints | Degenerate | Price proxy |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+            "| Type | Rows | Up rate | Up/Down | Horizon delta | Mean abs step return | Step return std | constraint_rate | hit_lower_band | hit_upper_band | flat_path | monotonic_path | Price proxy |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|",
         ]
         for predict_type, payload in sorted(forecast_summary.items()):
+            if predict_type.startswith("_"):
+                continue
             lines.append(
                 "| "
                 f"{predict_type} | "
@@ -1653,18 +2058,23 @@ class GenerateForecastBatchUseCase:
                 f"{float(payload['horizon_delta_pct']):+.2f}% | "
                 f"{float(payload['mean_abs_step_return_pct']):.3f}% | "
                 f"{float(payload['std_step_return_pct']):.3f}% | "
-                f"{int(payload['constraint_applied_count'])} | "
-                f"{'yes' if bool(payload['degenerate_direction_path']) else 'no'} | "
+                f"{float(payload.get('constraint_rate', 0.0)):.1%} | "
+                f"{'yes' if bool(payload.get('hit_lower_band')) else 'no'} | "
+                f"{'yes' if bool(payload.get('hit_upper_band')) else 'no'} | "
+                f"{'yes' if bool(payload.get('flat_path')) else 'no'} | "
+                f"{'yes' if bool(payload.get('monotonic_path')) else 'no'} | "
                 f"{'yes' if bool(payload['uses_price_proxy']) else 'no'} |"
             )
         return "\n".join(lines)
 
     @staticmethod
     def _build_forecast_warning_lines(
-        forecast_summary: dict[str, dict[str, float | int | bool]],
+        forecast_summary: dict[str, dict[str, Any]],
     ) -> str:
         warnings: list[str] = []
         for predict_type, payload in sorted(forecast_summary.items()):
+            if predict_type.startswith("_"):
+                continue
             if bool(payload["degenerate_direction_path"]):
                 warnings.append(
                     f"- `{predict_type}` has a degenerate direction path "
@@ -1678,8 +2088,19 @@ class GenerateForecastBatchUseCase:
             if int(payload["constraint_applied_count"]) > 0:
                 warnings.append(
                     f"- `{predict_type}` had {int(payload['constraint_applied_count'])} "
-                    "guardrail-constrained forecast rows."
+                    "guardrail-constrained forecast rows "
+                    f"({float(payload.get('constraint_rate', 0.0)):.1%})."
                 )
+            if bool(payload.get("hit_lower_band")) or bool(payload.get("hit_upper_band")):
+                warnings.append(
+                    f"- `{predict_type}` touched the dynamic cumulative band "
+                    f"(lower={int(payload.get('hit_lower_band_count', 0))}, "
+                    f"upper={int(payload.get('hit_upper_band_count', 0))})."
+                )
+            if bool(payload.get("flat_path")):
+                warnings.append(f"- `{predict_type}` has a flat forecast path.")
+            if bool(payload.get("monotonic_path")):
+                warnings.append(f"- `{predict_type}` has a monotonic forecast path.")
         if not warnings:
             return "No forecast stability warnings were triggered."
         return "\n".join(["### Forecast Warnings", "", *warnings])
@@ -1771,6 +2192,9 @@ class GenerateForecastBatchUseCase:
         predicted_step_return: float,
         horizon_return_from_last_observed: float,
         price_proxy_return: float | None,
+        hit_lower_band: bool,
+        hit_upper_band: bool,
+        dynamic_cumulative_return_cap: float,
         last_observed_date: pd.Timestamp,
         last_observed_close: float,
         input_window_start_date: pd.Timestamp,
@@ -1820,6 +2244,9 @@ class GenerateForecastBatchUseCase:
             "price_proxy_return": (
                 float(price_proxy_return) if price_proxy_return is not None else None
             ),
+            "hit_lower_band": bool(hit_lower_band),
+            "hit_upper_band": bool(hit_upper_band),
+            "dynamic_cumulative_return_cap": float(dynamic_cumulative_return_cap),
             "last_observed_date": last_observed_date.strftime("%Y-%m-%d"),
             "last_observed_close": float(last_observed_close),
             "input_window_start_date": input_window_start_date.strftime("%Y-%m-%d"),

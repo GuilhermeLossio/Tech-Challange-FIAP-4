@@ -512,6 +512,10 @@ class ProvisionAthenaCatalogUseCase:
             ("predicted_step_return", "double"),
             ("horizon_return_from_last_observed", "double"),
             ("price_proxy_return", "double"),
+            ("step_elapsed_ms", "double"),
+            ("hit_lower_band", "boolean"),
+            ("hit_upper_band", "boolean"),
+            ("dynamic_cumulative_return_cap", "double"),
             ("last_observed_date", "string"),
             ("last_observed_close", "double"),
             ("input_window_start_date", "string"),
@@ -523,6 +527,7 @@ class ProvisionAthenaCatalogUseCase:
             ("recursive_forecast", "boolean"),
             ("is_price_proxy", "boolean"),
             ("price_proxy_method", "string"),
+            ("model_prediction_target_mode", "string"),
         ]
         partitions = [
             ("source", "string"),

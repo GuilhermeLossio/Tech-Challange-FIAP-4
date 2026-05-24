@@ -1,4 +1,5 @@
-<!doctype html>
+﻿<!doctype html>
+{% import "components/forecast_dashboard.html" as forecast_ui %}
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -155,6 +156,10 @@
           </article>
           {% endfor %}
         </section>
+
+        {% if forecast_report %}
+        {{ forecast_ui.ExecutiveSummary(forecast_report) }}
+        {% endif %}
 
         <section class="panel">
           <div class="panel-head">
@@ -369,24 +374,79 @@
           {% endif %}
         </section>
 
+        <!-- SEÃ‡ÃƒO ATUALIZADA: Telemetria e Tabela de PrediÃ§Ãµes -->
         <section class="panel-grid">
-          <article class="panel">
+          <article class="panel" style="grid-column: 1 / -1;">
             <div class="panel-head">
               <div>
-                <div class="panel-title">Forecast Rows</div>
-                <div class="panel-subtitle">Read-only preview of the rows currently returned to the client.</div>
+                <div class="panel-title">Telemetria & Forecast Rows</div>
+                <div class="panel-subtitle">Monitoramento de previsÃµes, retornos, latÃªncia e seguranÃ§a por step.</div>
               </div>
               <span class="tag">{{ forecast_rows|length }} rows</span>
             </div>
 
             {% if forecast_rows %}
+            {% set current_step = forecast_rows[0] %}
+
+            <!-- DESTAQUE (KPIs do Step mais recente) -->
+            <div class="report-kpi-grid" style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid #e2e8f0;">
+
+              <article class="report-kpi">
+                <div class="metric-label">PrevisÃ£o de PreÃ§o (Latest)</div>
+                <div class="metric-value">${{ '%.2f'|format(current_step.predicted_close) }}</div>
+                <div class="metric-sub">{{ current_step.forecast_date }} | {{ current_step.predict_type }}</div>
+              </article>
+
+              <article class="report-kpi">
+                <div class="metric-label">Retorno no Step</div>
+                <div class="metric-value {% if current_step.predicted_step_return is defined and current_step.predicted_step_return is not none %}{% if current_step.predicted_step_return >= 0 %}positive-text{% else %}negative-text{% endif %}{% endif %}">
+                  {% if current_step.predicted_step_return is defined and current_step.predicted_step_return is not none %}
+                  {{ '+' if current_step.predicted_step_return >= 0 else '' }}{{ '%.2f'|format(current_step.predicted_step_return * 100.0) }}%
+                  {% else %}
+                  --
+                  {% endif %}
+                </div>
+                <div class="metric-sub">VariaÃ§Ã£o projetada</div>
+              </article>
+
+              <article class="report-kpi">
+                <div class="metric-label">Tempo de ExecuÃ§Ã£o</div>
+                <div class="metric-value" style="font-family: monospace;">
+                  {% if current_step.step_elapsed_ms is defined and current_step.step_elapsed_ms is not none %}
+                  {{ '%.1f'|format(current_step.step_elapsed_ms) }} <span style="font-size: 0.8em; color: #64748b;">ms</span>
+                  {% else %}
+                  --
+                  {% endif %}
+                </div>
+                <div class="metric-sub">LatÃªncia de inferÃªncia</div>
+              </article>
+
+              <article class="report-kpi">
+                <div class="metric-label">Status do Guardrail</div>
+                <div style="margin-top: 0.5rem;">
+                  {% if current_step.prediction_constraint_applied %}
+                  <span class="tag tag-amber" style="font-size: 0.95rem;">IntervenÃ§Ã£o Ativa</span>
+                  <div class="metric-sub" style="margin-top: 0.25rem;">Valor capado/limitado</div>
+                  {% else %}
+                  <span class="tag tag-teal" style="font-size: 0.95rem;">Safe (Pass)</span>
+                  <div class="metric-sub" style="margin-top: 0.25rem;">Dentro dos limites normais</div>
+                  {% endif %}
+                </div>
+              </article>
+
+            </div>
+
+            <!-- TABELA DE HISTÃ“RICO COM VISUAIS APERFEIÃ‡OADOS -->
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
                     <th>Date</th>
                     <th>Type</th>
-                    <th>Close</th>
+                    <th>PrevisÃ£o de PreÃ§o</th>
+                    <th>Retorno por step</th>
+                    <th>Tempo de exec.</th>
+                    <th>Guardrail</th>
                     <th>Direction</th>
                     <th>Proxy</th>
                   </tr>
@@ -395,8 +455,40 @@
                   {% for row in forecast_rows %}
                   <tr>
                     <td>{{ row.forecast_date }}</td>
-                    <td>{{ row.predict_type }}</td>
-                    <td>${{ '%.2f'|format(row.predicted_close) }}</td>
+                    <td><span class="tag">{{ row.predict_type }}</span></td>
+
+                    <!-- PrevisÃ£o -->
+                    <td><strong>${{ '%.2f'|format(row.predicted_close) }}</strong></td>
+
+                    <!-- Retorno -->
+                    <td class="{% if row.predicted_step_return is defined and row.predicted_step_return is not none %}{% if row.predicted_step_return >= 0 %}positive-text{% else %}negative-text{% endif %}{% endif %}">
+                      {% if row.predicted_step_return is defined and row.predicted_step_return is not none %}
+                      <strong>{{ '+' if row.predicted_step_return >= 0 else '' }}{{ '%.2f'|format(row.predicted_step_return * 100.0) }}%</strong>
+                      {% else %}
+                      --
+                      {% endif %}
+                    </td>
+
+                    <!-- Tempo -->
+                    <td style="font-family: monospace; color: #475569;">
+                      {% if row.step_elapsed_ms is defined and row.step_elapsed_ms is not none %}
+                      {{ '%.1f'|format(row.step_elapsed_ms) }} ms
+                      {% else %}
+                      --
+                      {% endif %}
+                    </td>
+
+                    <!-- Guardrail -->
+                    <td>
+                      {% if row.prediction_constraint_applied is defined and row.prediction_constraint_applied %}
+                      <span class="tag tag-amber">Restrito</span>
+                      {% elif row.prediction_constraint_applied is defined %}
+                      <span class="tag tag-teal">Safe</span>
+                      {% else %}
+                      --
+                      {% endif %}
+                    </td>
+
                     <td>{{ row.predicted_direction_label }}</td>
                     <td>{{ 'yes' if row.is_price_proxy else 'no' }}</td>
                   </tr>
@@ -408,6 +500,7 @@
             <div class="empty-state">No forecast rows available.</div>
             {% endif %}
           </article>
+          <!-- FIM DA SEÃ‡ÃƒO ATUALIZADA -->
 
           <article class="panel">
             <div class="panel-head">

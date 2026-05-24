@@ -105,41 +105,30 @@ def main() -> None:
 
     app = create_app()
     app.config["STATIC_EXPORT"] = True
-    exported_paths: list[Path] = []
     with app.test_client() as client:
-        for symbol in symbols:
-            params = {
-                "symbol": symbol,
-                "predict_type": "all",
-                "lookback": str(args.lookback),
-                "limit": str(args.limit),
-            }
-            if args.horizon_days is not None:
-                params["horizon_days"] = str(args.horizon_days)
-            if args.extraction_date:
-                params["extraction_date"] = args.extraction_date
+        index_symbol = _select_index_symbol(symbols)
+        params = {
+            "symbol": index_symbol,
+            "predict_type": "all",
+            "lookback": str(args.lookback),
+            "limit": str(args.limit),
+        }
+        if args.horizon_days is not None:
+            params["horizon_days"] = str(args.horizon_days)
+        if args.extraction_date:
+            params["extraction_date"] = args.extraction_date
 
-            response = client.get("/", query_string=params)
-            if response.status_code != 200:
-                raise SystemExit(
-                    f"Failed to render {symbol}: HTTP {response.status_code}"
-                )
-
-            symbol_dir = output_dir / symbol.lower()
-            symbol_dir.mkdir(parents=True, exist_ok=True)
-            page_path = symbol_dir / "index.html"
-            page_path.write_text(
-                _rewrite_links(response.get_data(as_text=True), depth=1),
-                encoding="utf-8",
+        response = client.get("/", query_string=params)
+        if response.status_code != 200:
+            raise SystemExit(
+                f"Failed to render {index_symbol}: HTTP {response.status_code}"
             )
-            exported_paths.append(page_path)
 
-            if symbol == _select_index_symbol(symbols):
-                index_html = _rewrite_links(response.get_data(as_text=True), depth=0)
-                (output_dir / "index.html").write_text(index_html, encoding="utf-8")
+        index_html = _rewrite_links(response.get_data(as_text=True))
+        (output_dir / "index.html").write_text(index_html, encoding="utf-8")
 
     _write_nojekyll(output_dir)
-    print(f"Exported {len(exported_paths) + 1} HTML files to {output_dir}")
+    print(f"Exported 1 HTML file to {output_dir}")
 
 
 def _copy_static_assets(output_dir: Path) -> None:
@@ -185,24 +174,24 @@ def _select_index_symbol(symbols: tuple[str, ...]) -> str:
     return symbols[0]
 
 
-def _rewrite_links(html: str, *, depth: int) -> str:
-    static_prefix = "../" * depth
-    html = html.replace('href="/static/app.css"', f'href="{static_prefix}static/app.css"')
-    html = html.replace('action="/"', 'action="../index.html"' if depth else 'action="index.html"')
+def _rewrite_links(html: str) -> str:
+    html = html.replace('href="/static/app.css"', 'href="static/app.css"')
+    html = html.replace('action="/"', 'action="index.html"')
     html = re.sub(
         r'href="/\?([^"]+)"',
-        lambda match: f'href="{_query_to_static_href(match.group(1), depth=depth)}"',
+        lambda match: f'href="{_query_to_static_href(match.group(1))}"',
         html,
     )
-    html = html.replace('href="/"', 'href="../index.html"' if depth else 'href="index.html"')
+    html = html.replace('href="/"', 'href="index.html"')
     return html
 
 
-def _query_to_static_href(query_string: str, *, depth: int) -> str:
+def _query_to_static_href(query_string: str) -> str:
     params = dict(parse_qsl(query_string, keep_blank_values=True))
-    symbol = params.get("symbol", DEFAULT_SYMBOL).lower()
-    prefix = "../" if depth else ""
-    return f"{prefix}{symbol}/index.html"
+    symbol = params.get("symbol")
+    if not symbol:
+        return "index.html"
+    return f"index.html?symbol={symbol.upper()}"
 
 
 def _write_nojekyll(output_dir: Path) -> None:

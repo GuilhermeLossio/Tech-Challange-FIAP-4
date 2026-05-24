@@ -63,6 +63,7 @@ class KerasTrainingRequest:
     seed: int = 42
     verbose: int = 1
     model_name_prefix: str = "lstm"
+    prediction_target_mode: str = "price"
 
 
 @dataclass(frozen=True)
@@ -149,7 +150,11 @@ class KerasTrainingService:
                 lookback=request.lookback,
                 target_column=request.target_column,
             )
-            dataset = self._build_training_dataset(frame=frame, request=request)
+            dataset = self._build_training_dataset(
+                frame=frame,
+                request=request,
+                scaler_metadata=scaler_metadata,
+            )
             self._set_random_seed(request.seed)
 
             model_relative_path = self._build_model_relative_path(
@@ -250,21 +255,27 @@ class KerasTrainingService:
                 X=dataset["X_train"],
                 y_scaled=dataset["y_train_scaled"],
                 y_raw=dataset["y_train_raw"],
+                current_raw=dataset["current_train_raw"],
                 scaler_metadata=scaler_metadata,
+                prediction_target_mode=request.prediction_target_mode,
             )
             validation_metrics = self._evaluate_split(
                 model=model,
                 X=dataset["X_validation"],
                 y_scaled=dataset["y_validation_scaled"],
                 y_raw=dataset["y_validation_raw"],
+                current_raw=dataset["current_validation_raw"],
                 scaler_metadata=scaler_metadata,
+                prediction_target_mode=request.prediction_target_mode,
             )
             test_metrics = self._evaluate_split(
                 model=model,
                 X=dataset["X_test"],
                 y_scaled=dataset["y_test_scaled"],
                 y_raw=dataset["y_test_raw"],
+                current_raw=dataset["current_test_raw"],
                 scaler_metadata=scaler_metadata,
+                prediction_target_mode=request.prediction_target_mode,
             )
             loss_chart_relative_path = self._build_run_artifact_relative_path(
                 source=request.source,
@@ -389,6 +400,7 @@ class KerasTrainingService:
                 "seed": request.seed,
                 "verbose": request.verbose,
                 "model_name_prefix": request.model_name_prefix,
+                "prediction_target_mode": request.prediction_target_mode,
             },
             "asset_count": len(artifacts),
             "assets": [asdict(artifact) for artifact in artifacts],
@@ -440,6 +452,8 @@ class KerasTrainingService:
             raise ValueError("verbose must be one of: 0, 1, 2.")
         if not request.model_name_prefix.strip():
             raise ValueError("model_name_prefix must not be blank.")
+        if request.prediction_target_mode not in {"price", "return"}:
+            raise ValueError("prediction_target_mode must be either 'price' or 'return'.")
 
     def _load_training_frame(
         self,
@@ -465,6 +479,7 @@ class KerasTrainingService:
         *,
         frame: pd.DataFrame,
         request: KerasTrainingRequest,
+        scaler_metadata: dict[str, float],
     ) -> dict[str, Any]:
         feature_columns = [
             f"{request.target_column}_t_minus_{lag}"
@@ -495,7 +510,21 @@ class KerasTrainingService:
         X = ordered.loc[:, feature_columns].to_numpy(dtype=np.float32).reshape(
             -1, request.lookback, 1
         )
-        y_scaled = ordered["y_scaled"].to_numpy(dtype=np.float32)
+        current_raw = self._inverse_scale(
+            ordered[feature_columns[-1]].to_numpy(dtype=np.float32),
+            min_offset=scaler_metadata["min_offset"],
+            scale=scaler_metadata["scale"],
+        ).astype(np.float32)
+        target_return = self._build_target_return_array(
+            ordered=ordered,
+            target_raw_column=target_raw_column,
+            current_raw=current_raw,
+        )
+        y_scaled = (
+            target_return
+            if request.prediction_target_mode == "return"
+            else ordered["y_scaled"].to_numpy(dtype=np.float32)
+        )
         y_raw = ordered[target_raw_column].to_numpy(dtype=np.float32)
         split = ordered["split"].astype(str).str.lower()
 
@@ -513,16 +542,34 @@ class KerasTrainingService:
             "X_train": X[train_mask],
             "y_train_scaled": y_scaled[train_mask],
             "y_train_raw": y_raw[train_mask],
+            "current_train_raw": current_raw[train_mask],
             "X_validation": X[validation_mask],
             "y_validation_scaled": y_scaled[validation_mask],
             "y_validation_raw": y_raw[validation_mask],
+            "current_validation_raw": current_raw[validation_mask],
             "X_test": X[test_mask],
             "y_test_scaled": y_scaled[test_mask],
             "y_test_raw": y_raw[test_mask],
+            "current_test_raw": current_raw[test_mask],
             "train_count": int(train_mask.sum()),
             "validation_count": int(validation_mask.sum()),
             "test_count": int(test_mask.sum()),
         }
+
+    @staticmethod
+    def _build_target_return_array(
+        *,
+        ordered: pd.DataFrame,
+        target_raw_column: str,
+        current_raw: np.ndarray,
+    ) -> np.ndarray:
+        if "target_return_1d" in ordered.columns:
+            return ordered["target_return_1d"].to_numpy(dtype=np.float32)
+        target_value = ordered[target_raw_column].to_numpy(dtype=np.float32)
+        returns = np.zeros(len(ordered.index), dtype=np.float32)
+        non_zero_mask = np.abs(current_raw) > 1e-8
+        returns[non_zero_mask] = target_value[non_zero_mask] / current_raw[non_zero_mask] - 1.0
+        return returns
 
     def _set_random_seed(self, seed: int) -> None:
         np.random.seed(seed)
@@ -582,7 +629,9 @@ class KerasTrainingService:
         X: np.ndarray,
         y_scaled: np.ndarray,
         y_raw: np.ndarray,
+        current_raw: np.ndarray,
         scaler_metadata: dict[str, float],
+        prediction_target_mode: str,
     ) -> SplitMetrics:
         if len(X) == 0:
             return SplitMetrics(
@@ -596,11 +645,14 @@ class KerasTrainingService:
 
         evaluation = model.evaluate(X, y_scaled, verbose=0)
         predictions_scaled = model.predict(X, verbose=0).reshape(-1)
-        predictions_raw = self._inverse_scale(
-            predictions_scaled,
-            min_offset=scaler_metadata["min_offset"],
-            scale=scaler_metadata["scale"],
-        )
+        if prediction_target_mode == "return":
+            predictions_raw = current_raw * (1.0 + predictions_scaled)
+        else:
+            predictions_raw = self._inverse_scale(
+                predictions_scaled,
+                min_offset=scaler_metadata["min_offset"],
+                scale=scaler_metadata["scale"],
+            )
 
         mae = float(np.mean(np.abs(y_raw - predictions_raw)))
         rmse = float(np.sqrt(np.mean(np.square(y_raw - predictions_raw))))
@@ -671,6 +723,7 @@ class KerasTrainingService:
 | Paciencia do early stopping | `{request.patience}` |
 | Learning rate | `{request.learning_rate}` |
 | Seed | `{request.seed}` |
+| Prediction target mode | `{request.prediction_target_mode}` |
 
 ## Dataset
 
