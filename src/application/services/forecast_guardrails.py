@@ -65,6 +65,29 @@ def apply_standard_forecast_guardrail(
     )
 
 
+def dampen_recursive_return_bias(
+    *,
+    predicted_return: float,
+    forecast_step: int,
+    horizon_days: int,
+    min_decay_factor: float = 0.15,
+    step_decay_rate: float = 0.03,
+    long_horizon_start: int = 30,
+) -> float:
+    """Reduce systematic return drift during long recursive forecasts.
+
+    A return model can emit a small same-sign bias that is valid for one step but
+    compounds unrealistically when its own predictions are fed back for months.
+    This is calibration of the recursive path, not a volatility guardrail.
+    """
+    if forecast_step <= 1 or horizon_days <= long_horizon_start:
+        return float(predicted_return)
+
+    step_decay = 1.0 / (1.0 + step_decay_rate * float(forecast_step - 1))
+    decay_factor = max(float(min_decay_factor), float(step_decay))
+    return float(predicted_return * decay_factor)
+
+
 def clamp_interval_to_guardrail_band(
     *,
     predicted_close: float,

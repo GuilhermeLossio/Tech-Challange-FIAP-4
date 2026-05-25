@@ -40,7 +40,7 @@
             {% for item in supported_symbols %}
             <a
               class="static-nav-link {% if item == symbol %}static-nav-link-active{% endif %}"
-              href="{{ url_for('dashboard', symbol=item, predict_type='all', lookback=lookback, horizon_days=horizon_days, limit=row_limit) }}"
+              href="{{ url_for('dashboard', symbol=item, predict_type='all', lookback=lookback, horizon_days=horizon_days, limit=row_limit_value) }}"
             >{{ item }}</a>
             {% endfor %}
           </div>
@@ -101,7 +101,7 @@
 
           <label class="field">
             <span>Rows</span>
-            <input type="number" min="1" name="limit" value="{{ row_limit }}">
+            <input type="number" min="1" name="limit" value="{{ row_limit_value }}" placeholder="All rows">
           </label>
 
           <div class="filter-actions">
@@ -134,6 +134,7 @@
             <div class="meta-chip">Horizon {{ horizon_days }}</div>
             {% if comparison_future_result %}
             <div class="meta-chip">Forecast {{ comparison_future_result.generated_at }}</div>
+            <div class="meta-chip">{{ comparison_future_result.available_forecast_start_date }} to {{ comparison_future_result.available_forecast_end_date }}</div>
             {% endif %}
             <div class="meta-chip meta-chip-accent">Quantum online: disabled</div>
           </div>
@@ -156,6 +157,65 @@
           </article>
           {% endfor %}
         </section>
+
+        {% if forecast_window_summary %}
+        <section class="panel forecast-window-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Forecast Window</div>
+              <div class="panel-subtitle">
+                Latest materialized forecast {{ forecast_window_summary.generated_at }} for {{ forecast_window_summary.symbol }}.
+              </div>
+            </div>
+            <div class="panel-tags">
+              <span class="tag">{{ forecast_window_summary.predict_types }}</span>
+              <span class="tag tag-teal">{{ forecast_window_summary.returned_row_count }} rows shown</span>
+            </div>
+          </div>
+          <div class="forecast-window-grid">
+            <article class="forecast-window-card">
+              <div class="metric-label">Last observed</div>
+              <div class="metric-value">{{ forecast_window_summary.last_observed_date }}</div>
+              <div class="metric-sub">${{ '%.2f'|format(forecast_window_summary.last_observed_close) }}</div>
+            </article>
+            <article class="forecast-window-card">
+              <div class="metric-label">Forecast start</div>
+              <div class="metric-value">{{ forecast_window_summary.available_forecast_start_date }}</div>
+              <div class="metric-sub">available horizon begins</div>
+            </article>
+            <article class="forecast-window-card">
+              <div class="metric-label">Forecast end</div>
+              <div class="metric-value">{{ forecast_window_summary.available_forecast_end_date }}</div>
+              <div class="metric-sub">{{ horizon_days }} business days</div>
+            </article>
+            <article class="forecast-window-card">
+              <div class="metric-label">Displayed range</div>
+              <div class="metric-value">{{ forecast_window_summary.returned_forecast_start_date }} to {{ forecast_window_summary.returned_forecast_end_date }}</div>
+              <div class="metric-sub">
+                {{ forecast_window_summary.returned_row_count }} of {{ forecast_window_summary.available_row_count }} rows{% if forecast_window_summary.row_limit %}, limit {{ forecast_window_summary.row_limit }}{% endif %}
+              </div>
+            </article>
+          </div>
+          {% if forecast_window_summary.model_cards %}
+          <div class="model-meta-grid">
+            {% for model in forecast_window_summary.model_cards %}
+            <article class="model-meta-card model-meta-card-{{ model.predict_type }}">
+              <div class="model-meta-head">
+                <span class="legend-swatch" style="background: {% if model.predict_type == 'normal' %}#0b6e69{% elif model.predict_type == 'quant' %}#c46d1a{% else %}#334155{% endif %}"></span>
+                <strong>{{ model.title }}</strong>
+              </div>
+              <dl class="model-meta-list">
+                <div><dt>model_name</dt><dd>{{ model.model_name }}</dd></div>
+                <div><dt>feature_input_mode</dt><dd>{{ model.feature_input_mode }}</dd></div>
+                <div><dt>target_mode</dt><dd>{{ model.target_mode }}</dd></div>
+                <div><dt>sequence_input_kind</dt><dd>{{ model.sequence_input_kind }}</dd></div>
+              </dl>
+            </article>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </section>
+        {% endif %}
 
         {% if forecast_report %}
         {{ forecast_ui.ExecutiveSummary(forecast_report) }}
@@ -247,7 +307,7 @@
                   <td>
                     <a
                       class="table-link"
-                      href="{{ url_for('dashboard', symbol=row.symbol, extraction_date=selected_extraction_date, predict_type=selected_predict_type, reference_date=selected_reference_date, forecast_date_from=selected_forecast_date_from, forecast_date_to=selected_forecast_date_to, lookback=lookback, horizon_days=horizon_days, limit=row_limit) }}"
+                      href="{{ url_for('dashboard', symbol=row.symbol, predict_type=selected_predict_type, forecast_date_from=selected_forecast_date_from, forecast_date_to=selected_forecast_date_to, lookback=lookback, limit=row_limit_value) }}"
                     >view</a>
                   </td>
                 </tr>
@@ -266,7 +326,7 @@
               <div class="panel-title">Six-Month Market Context</div>
               <div class="panel-subtitle">
                 {% if historical_window %}
-                Observed closes from {{ historical_window.start_date }} to {{ historical_window.end_date }}, followed by standard and quantum forward paths{% if comparison_future_result %} generated at {{ comparison_future_result.generated_at }}{% endif %}.
+                Observed closes from {{ historical_window.start_date }} to {{ historical_window.end_date }}, followed by standard and quantum paths{% if comparison_future_result %} from {{ comparison_future_result.available_forecast_start_date }} to {{ comparison_future_result.available_forecast_end_date }} generated at {{ comparison_future_result.generated_at }}{% endif %}.
                 {% else %}
                 Historical context unavailable for the current filter set.
                 {% endif %}
@@ -279,30 +339,36 @@
           </div>
 
           {% if market_context_chart %}
-          <svg class="forecast-chart forecast-chart-hero" viewBox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" preserveAspectRatio="none" aria-label="Six-month market context chart">
+          <svg class="forecast-chart forecast-chart-hero" viewBox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Six-month market context chart">
             {% for guide in market_context_chart.y_guides %}
             <line x1="0" x2="{{ market_context_chart.width }}" y1="{{ guide.y }}" y2="{{ guide.y }}" class="chart-guide"></line>
             <text x="8" y="{{ guide.y - 6 }}" class="chart-label">${{ '%.2f'|format(guide.value) }}</text>
             {% endfor %}
+            <line x1="0" x2="{{ market_context_chart.width }}" y1="{{ market_context_chart.base_y }}" y2="{{ market_context_chart.base_y }}" class="chart-base"></line>
+            <text x="8" y="{{ market_context_chart.base_y + 14 }}" class="chart-base-label">{{ market_context_chart.base_label }}</text>
             <line x1="{{ market_context_chart.boundary_x }}" x2="{{ market_context_chart.boundary_x }}" y1="0" y2="{{ market_context_chart.height }}" class="chart-boundary"></line>
             <polyline points="{{ market_context_chart.history_polyline }}" fill="none" stroke="{{ market_context_chart.history_color }}" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
             {% for series in market_context_chart.forecast_series %}
             <polyline points="{{ series.polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="3" stroke-dasharray="{{ series.dasharray }}" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <circle cx="{{ series.endpoint_x }}" cy="{{ series.endpoint_y }}" r="4.5" fill="{{ series.color }}" class="chart-endpoint"></circle>
             {% endfor %}
             {% for label in market_context_chart.x_labels %}
             <text x="{{ label.x }}" y="{{ market_context_chart.height - 6 }}" text-anchor="middle" class="chart-label">{{ label.label }}</text>
             {% endfor %}
           </svg>
-          <div class="legend-row">
-            <div class="legend-pill">
+          <div class="legend-row chart-summary-row">
+            <div class="legend-pill chart-summary-pill">
               <span class="legend-swatch" style="background: #174b83"></span>
               <span>historical close</span>
+              <strong>{{ market_context_chart.base_label }}</strong>
             </div>
             {% for series in market_context_chart.forecast_series %}
-            <div class="legend-pill">
+            <div class="legend-pill chart-summary-pill">
               <span class="legend-swatch" style="background: {{ series.color }}"></span>
               <span>{{ series.label }}</span>
               <strong>D+1 ${{ '%.2f'|format(series.day_one_value) }}</strong>
+              <strong>End ${{ '%.2f'|format(series.last_value) }}</strong>
+              <strong class="{% if series.final_delta_abs >= 0 %}positive-text{% else %}negative-text{% endif %}">End {{ series.final_delta_label }}</strong>
             </div>
             {% endfor %}
           </div>
@@ -383,16 +449,17 @@
                 <div class="panel-subtitle">Monitoramento de previsÃµes, retornos, latÃªncia e seguranÃ§a por step.</div>
               </div>
               <span class="tag">{{ forecast_rows|length }} rows</span>
+              {% if future_result %}<span class="tag tag-teal">{{ future_result.returned_forecast_start_date }} to {{ future_result.returned_forecast_end_date }}</span>{% endif %}
             </div>
 
             {% if forecast_rows %}
-            {% set current_step = forecast_rows[0] %}
+            {% set current_step = forecast_rows[-1] %}
 
             <!-- DESTAQUE (KPIs do Step mais recente) -->
             <div class="report-kpi-grid" style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid #e2e8f0;">
 
               <article class="report-kpi">
-                <div class="metric-label">PrevisÃ£o de PreÃ§o (Latest)</div>
+                <div class="metric-label">Horizon End Price</div>
                 <div class="metric-value">${{ '%.2f'|format(current_step.predicted_close) }}</div>
                 <div class="metric-sub">{{ current_step.forecast_date }} | {{ current_step.predict_type }}</div>
               </article>

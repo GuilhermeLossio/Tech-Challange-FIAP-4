@@ -27,7 +27,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.application.services.forecast_guardrails import apply_standard_forecast_guardrail  # noqa: E402
+from src.application.services.forecast_guardrails import (  # noqa: E402
+    apply_standard_forecast_guardrail,
+    dampen_recursive_return_bias,
+)
 from src.application.use_cases.generate_feature_dataset import GenerateFeatureDatasetUseCase  # noqa: E402
 from src.infrastructure.config.settings import ForecastPipelineSettings  # noqa: E402
 
@@ -56,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         choices=("price", "return"),
         default="price",
         help="Use `return` when the selected model was trained with --prediction-target-mode return.",
+    )
+    parser.add_argument(
+        "--feature-input-mode",
+        choices=("sequence_price", "technical_returns"),
+        default="sequence_price",
     )
     parser.add_argument("--output-dir", default="data/processed/backtests/forecast_windows")
     return parser.parse_args()
@@ -125,6 +133,91 @@ def inverse_scale_array(values: np.ndarray, *, min_offset: float, scale: float) 
     return (values - min_offset) / scale
 
 
+def build_return_sequence(raw_window: np.ndarray) -> np.ndarray:
+    previous = raw_window[:-1]
+    current = raw_window[1:]
+    returns = np.zeros(len(current), dtype=np.float32)
+    non_zero_mask = np.abs(previous) > 1e-8
+    returns[non_zero_mask] = current[non_zero_mask] / previous[non_zero_mask] - 1.0
+    return returns.reshape(1, len(returns), 1)
+
+
+def compute_engineered_features(raw_window: np.ndarray) -> dict[str, float]:
+    daily_returns = GenerateFeatureDatasetUseCase._compute_daily_returns(raw_window)  # type: ignore[attr-defined]
+    current_price = float(raw_window[-1])
+    sma_5 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 5)  # type: ignore[attr-defined]
+    sma_10 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 10)  # type: ignore[attr-defined]
+    sma_20 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 20)  # type: ignore[attr-defined]
+    return {
+        "feature_return_1d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 1),  # type: ignore[attr-defined]
+        "feature_return_5d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 5),  # type: ignore[attr-defined]
+        "feature_return_10d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 10),  # type: ignore[attr-defined]
+        "feature_return_20d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 20),  # type: ignore[attr-defined]
+        "feature_sma_gap_5d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_5),  # type: ignore[attr-defined]
+        "feature_sma_gap_10d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_10),  # type: ignore[attr-defined]
+        "feature_sma_gap_20d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_20),  # type: ignore[attr-defined]
+        "feature_ema_gap_5d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, GenerateFeatureDatasetUseCase._compute_ema(raw_window, 5)),  # type: ignore[attr-defined]
+        "feature_ema_gap_10d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, GenerateFeatureDatasetUseCase._compute_ema(raw_window, 10)),  # type: ignore[attr-defined]
+        "feature_volatility_5d": GenerateFeatureDatasetUseCase._compute_volatility(daily_returns, 5),  # type: ignore[attr-defined]
+        "feature_volatility_10d": GenerateFeatureDatasetUseCase._compute_volatility(daily_returns, 10),  # type: ignore[attr-defined]
+        "feature_trend_slope_10d": GenerateFeatureDatasetUseCase._compute_trend_slope(raw_window, 10),  # type: ignore[attr-defined]
+        "feature_trend_slope_20d": GenerateFeatureDatasetUseCase._compute_trend_slope(raw_window, 20),  # type: ignore[attr-defined]
+        "feature_up_day_ratio_5d": GenerateFeatureDatasetUseCase._compute_up_day_ratio(daily_returns, 5),  # type: ignore[attr-defined]
+        "feature_up_day_ratio_10d": GenerateFeatureDatasetUseCase._compute_up_day_ratio(daily_returns, 10),  # type: ignore[attr-defined]
+        "feature_position_in_window": GenerateFeatureDatasetUseCase._compute_position_in_window(raw_window),  # type: ignore[attr-defined]
+        "feature_window_max_drawdown": GenerateFeatureDatasetUseCase._compute_max_drawdown(raw_window),  # type: ignore[attr-defined]
+    }
+
+
+def load_keras_feature_columns(
+    *,
+    models_root: Path,
+    extraction_date: date,
+    source: str,
+    symbol: str,
+    target_column: str,
+    lookback: int,
+    model_name_prefix: str,
+) -> list[str]:
+    manifests_root = models_root / "manifests" / f"extraction_date={extraction_date.isoformat()}"
+    expected_model_name = f"{model_name_prefix}_{symbol.lower()}.keras"
+    for manifest_path in sorted(manifests_root.glob("trained_at=*/keras_training_manifest.json"), reverse=True):
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        request = payload.get("request", {})
+        if (
+            request.get("source") != source
+            or request.get("target_column") != target_column
+            or int(request.get("lookback", lookback)) != lookback
+        ):
+            continue
+        for asset in payload.get("assets", []):
+            if (
+                str(asset.get("symbol", "")).upper() == symbol.upper()
+                and Path(str(asset.get("model_local_path", ""))).name.lower()
+                == expected_model_name.lower()
+            ):
+                return [str(item) for item in asset.get("engineered_feature_columns", [])]
+    return []
+
+
+def build_model_input(
+    *,
+    raw_window: np.ndarray,
+    scaled_window: np.ndarray,
+    lookback: int,
+    feature_input_mode: str,
+    feature_columns: list[str],
+) -> Any:
+    if feature_input_mode != "technical_returns":
+        return scaled_window.reshape(1, lookback, 1)
+    values = compute_engineered_features(raw_window.astype(np.float64))
+    missing = [column for column in feature_columns if column not in values]
+    if missing:
+        raise ValueError(f"Missing engineered features for backtest: {missing}")
+    features = np.asarray([[values[column] for column in feature_columns]], dtype=np.float32)
+    return [build_return_sequence(raw_window.astype(np.float64)), features]
+
+
 def compute_dynamic_cumulative_return_cap(
     *,
     recent_window: np.ndarray,
@@ -162,6 +255,7 @@ def run_backtest_for_symbol(
     forecast_end: date,
     model_name_prefix: str,
     prediction_target_mode: str,
+    feature_input_mode: str,
 ) -> pd.DataFrame:
     raw_path = (
         raw_root
@@ -185,6 +279,20 @@ def run_backtest_for_symbol(
 
     model_path = models_root / f"{model_name_prefix}_{symbol.lower()}.keras"
     model = tf.keras.models.load_model(model_path, compile=False)
+    feature_columns = load_keras_feature_columns(
+        models_root=models_root,
+        extraction_date=extraction_date,
+        source=source,
+        symbol=symbol,
+        target_column=target_column,
+        lookback=lookback,
+        model_name_prefix=model_name_prefix,
+    )
+    if feature_input_mode == "technical_returns" and not feature_columns:
+        raise ValueError(
+            f"No engineered feature columns found in Keras manifest for {symbol}. "
+            "Train with --feature-input-mode technical_returns first."
+        )
     scaler = load_scaler_metadata(
         processed_root=processed_root,
         extraction_date=extraction_date,
@@ -202,6 +310,17 @@ def run_backtest_for_symbol(
         scale=scaler["scale"],
     ).astype(np.float32)
     last_observed_close = float(raw_window[-1])
+    baseline_last_close = last_observed_close
+    baseline_sma_5 = float(np.mean(raw_window[-min(5, len(raw_window)) :]))
+    baseline_sma_20 = float(np.mean(raw_window[-min(20, len(raw_window)) :]))
+    historical_returns = GenerateFeatureDatasetUseCase._compute_daily_returns(  # type: ignore[attr-defined]
+        raw_window.astype(np.float64)
+    )
+    mean_return_20 = (
+        float(np.mean(historical_returns[-min(20, len(historical_returns)) :]))
+        if len(historical_returns)
+        else 0.0
+    )
 
     rows: list[dict[str, Any]] = []
     actual_by_date = {
@@ -210,9 +329,22 @@ def run_backtest_for_symbol(
     }
     for step, forecast_date in enumerate(forecast_dates, start=1):
         input_close = float(raw_window[-1])
-        model_output = float(model.predict(scaled_window.reshape(1, lookback, 1), verbose=0).reshape(-1)[0])
+        model_input = build_model_input(
+            raw_window=raw_window,
+            scaled_window=scaled_window,
+            lookback=lookback,
+            feature_input_mode=feature_input_mode,
+            feature_columns=feature_columns,
+        )
+        model_output = float(model.predict(model_input, verbose=0).reshape(-1)[0])
         if prediction_target_mode == "return":
             raw_predicted_close = input_close * (1.0 + model_output)
+            calibrated_return = dampen_recursive_return_bias(
+                predicted_return=model_output,
+                forecast_step=step,
+                horizon_days=len(forecast_dates),
+            )
+            guardrail_input_close = input_close * (1.0 + calibrated_return)
         else:
             raw_predicted_close = float(
                 inverse_scale_array(
@@ -221,8 +353,9 @@ def run_backtest_for_symbol(
                     scale=scaler["scale"],
                 )[0]
             )
+            guardrail_input_close = raw_predicted_close
         guardrail = apply_standard_forecast_guardrail(
-            raw_model_close=raw_predicted_close,
+            raw_model_close=guardrail_input_close,
             current_close=input_close,
             recent_window=raw_window.astype(np.float64),
         )
@@ -240,6 +373,7 @@ def run_backtest_for_symbol(
         rows.append(
             {
                 "symbol": symbol.upper(),
+                "predict_type": "normal",
                 "forecast_step": step,
                 "forecast_date": forecast_date.strftime("%Y-%m-%d"),
                 "predicted_close": predicted_close,
@@ -253,8 +387,35 @@ def run_backtest_for_symbol(
                 ),
                 "dynamic_cumulative_return_cap": cap,
                 "prediction_target_mode": prediction_target_mode,
+                "feature_input_mode": feature_input_mode,
             }
         )
+        for predict_type, baseline_close in (
+            ("baseline_last_close", baseline_last_close),
+            ("baseline_sma_5", baseline_sma_5),
+            ("baseline_sma_20", baseline_sma_20),
+            ("baseline_recent_return_20", baseline_last_close * ((1.0 + mean_return_20) ** step)),
+        ):
+            actual_close = actual_by_date.get(forecast_date.strftime("%Y-%m-%d"))
+            error = None if actual_close is None else baseline_close - actual_close
+            rows.append(
+                {
+                    "symbol": symbol.upper(),
+                    "predict_type": predict_type,
+                    "forecast_step": step,
+                    "forecast_date": forecast_date.strftime("%Y-%m-%d"),
+                    "predicted_close": baseline_close,
+                    "actual_close": actual_close,
+                    "error": error,
+                    "abs_error": abs(error) if error is not None else None,
+                    "ape": abs(error / actual_close) if actual_close and error is not None else None,
+                    "raw_model_predicted_close": None,
+                    "prediction_constraint_applied": False,
+                    "dynamic_cumulative_return_cap": None,
+                    "prediction_target_mode": "baseline",
+                    "feature_input_mode": "baseline",
+                }
+            )
         raw_window = np.concatenate([raw_window[1:], np.asarray([predicted_close], dtype=np.float32)])
         scaled_next = scale_array(
             np.asarray([predicted_close], dtype=np.float32),
@@ -271,16 +432,16 @@ def write_report(*, destination: Path, frame: pd.DataFrame, generated_at_utc: st
         "",
         f"Generated at UTC: `{generated_at_utc}`",
         "",
-        "| Symbol | Compared rows | MAE | RMSE | MAPE | Constraint rate |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Symbol | Type | Compared rows | MAE | RMSE | MAPE | Constraint rate |",
+        "|---|---|---:|---:|---:|---:|---:|",
     ]
     comparable = frame.dropna(subset=["actual_close"]).copy()
-    for symbol, group in comparable.groupby("symbol"):
+    for (symbol, predict_type), group in comparable.groupby(["symbol", "predict_type"]):
         errors = group["error"].astype(float)
         abs_errors = group["abs_error"].astype(float)
         ape = group["ape"].astype(float)
         lines.append(
-            f"| {symbol} | {len(group.index)} | "
+            f"| {symbol} | {predict_type} | {len(group.index)} | "
             f"{abs_errors.mean():.4f} | "
             f"{np.sqrt(np.mean(np.square(errors))):.4f} | "
             f"{ape.mean() * 100.0:.2f}% | "
@@ -315,6 +476,7 @@ def main() -> int:
             forecast_end=parse_iso_date(args.forecast_end),
             model_name_prefix=args.model_name_prefix,
             prediction_target_mode=args.prediction_target_mode,
+            feature_input_mode=args.feature_input_mode,
         )
         for symbol in args.symbols
     ]

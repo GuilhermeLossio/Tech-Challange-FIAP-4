@@ -8,6 +8,9 @@
     </div>
     <div class="forecast-dashboard-meta">
       <span>Last close ${{ '%.2f'|format(report.last_observed_close) }}</span>
+      <span>Observed {{ report.last_observed_date }}</span>
+      <span>{{ report.available_forecast_start_date }} to {{ report.available_forecast_end_date }}</span>
+      <span>Forecast {{ report.generated_at }}</span>
       <span>{{ report.horizon_days }} business days</span>
       {% if report.uses_price_proxy %}<span class="badge badge-proxy">Price proxy in use</span>{% endif %}
     </div>
@@ -28,6 +31,7 @@
   </div>
 
   <div class="forecast-dashboard-tabs" aria-label="Forecast dashboard sections">
+    <span>Forecast Window</span>
     <span>Runtime Performance</span>
     <span>Price Forecast</span>
     <span>Directional Accuracy</span>
@@ -35,6 +39,7 @@
   </div>
 
   <div class="forecast-section-grid">
+    {{ ForecastWindow(report) }}
     {{ RuntimeComparison(report) }}
     {{ ForecastSummary(report) }}
     {{ DirectionAccuracy(report) }}
@@ -54,6 +59,19 @@
   </section>
 
   {{ ModelComparisonTable(report.detailed_rows) }}
+</section>
+{% endmacro %}
+
+{% macro ForecastWindow(report) %}
+<section class="forecast-section">
+  <div class="section-kicker">Forecast Window</div>
+  <h3>Materialized Range</h3>
+  <dl class="metric-list">
+    <div><dt>Last observed</dt><dd>{{ report.last_observed_date }}</dd></div>
+    <div><dt>Forecast start</dt><dd>{{ report.available_forecast_start_date }}</dd></div>
+    <div><dt>Forecast end</dt><dd>{{ report.available_forecast_end_date }}</dd></div>
+    <div><dt>Generated at</dt><dd>{{ report.generated_at }}</dd></div>
+  </dl>
 </section>
 {% endmacro %}
 

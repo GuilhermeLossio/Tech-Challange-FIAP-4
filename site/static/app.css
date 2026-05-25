@@ -355,6 +355,73 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
+.forecast-window-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1rem;
+}
+
+.forecast-window-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: #f8fafc;
+}
+
+.forecast-window-card .metric-value {
+  overflow-wrap: anywhere;
+}
+
+.model-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.model-meta-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.model-meta-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-main);
+}
+
+.model-meta-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.model-meta-list div {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1.3fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.model-meta-list dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.model-meta-list dd {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .panel,
 .metric-card,
 .warning-card {
@@ -669,10 +736,47 @@ a {
   stroke-dasharray: 10 8;
 }
 
+.chart-base {
+  stroke: #64748b;
+  stroke-width: 1.4;
+  stroke-dasharray: 5 5;
+}
+
 .chart-label {
   fill: var(--text-muted);
   font-size: 11px;
   font-family: var(--font-sans);
+}
+
+.chart-base-label,
+.chart-end-label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+}
+
+.chart-base-label {
+  fill: #475569;
+}
+
+.chart-end-label-positive {
+  fill: var(--positive);
+}
+
+.chart-end-label-negative {
+  fill: var(--negative);
+}
+
+.chart-end-label-neutral {
+  fill: var(--text-muted);
+}
+
+.chart-endpoint {
+  stroke: #ffffff;
+  stroke-width: 2;
 }
 
 .legend-row {
@@ -687,6 +791,24 @@ a {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.chart-summary-row {
+  justify-content: flex-start;
+}
+
+.chart-summary-pill {
+  min-width: 220px;
+  padding: 0.75rem;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-rail);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.chart-summary-pill strong {
+  white-space: nowrap;
 }
 
 .legend-swatch {

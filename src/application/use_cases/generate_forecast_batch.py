@@ -18,7 +18,10 @@ import pandas as pd
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-from src.application.services.forecast_guardrails import apply_standard_forecast_guardrail
+from src.application.services.forecast_guardrails import (
+    apply_standard_forecast_guardrail,
+    dampen_recursive_return_bias,
+)
 from src.application.services.model_promotion_registry import ModelPromotionRegistry
 
 try:
@@ -118,6 +121,7 @@ class ForecastBatchRequest:
     quantum_optimization_level: int = 1
     confirm_ibm_runtime_cost: bool = False
     max_cloud_quantum_predictions: int = 5
+    quality_gate_mode: str = "fail"
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,21 @@ class ForecastStepStabilizationResult:
     dynamic_cumulative_return_cap: float
 
 
+@dataclass(frozen=True)
+class PendingForecastArtifact:
+    symbol: str
+    future_predict_frame: pd.DataFrame
+    predict_types: tuple[str, ...]
+    forecast_summary: dict[str, dict[str, Any]]
+    normal_model_local_path: str | None
+    quantum_model_local_path: str | None
+    normal_elapsed_ms: float | None
+    normal_per_step_ms: list[float] | None
+    quantum_elapsed_ms: float | None
+    quantum_per_step_ms: list[float] | None
+    timing_ratio: float | None
+
+
 class GenerateForecastBatchUseCase:
     """
     Generate a combined future prediction dataset for both model families.
@@ -214,7 +233,7 @@ class GenerateForecastBatchUseCase:
 
         generated_at_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         generated_at_token = self._to_path_safe_timestamp(generated_at_utc)
-        artifacts: list[ForecastAssetArtifact] = []
+        pending_forecasts: list[PendingForecastArtifact] = []
 
         for symbol in request.symbols:
             raw_frame = self._load_raw_frame(
@@ -339,65 +358,12 @@ class GenerateForecastBatchUseCase:
                 "timing_ratio_quant_over_normal": timing_ratio,
             }
 
-            relative_path = self._build_future_predict_relative_path(
-                source=request.source,
-                symbol=symbol,
-                lookback=request.lookback,
-                horizon_days=request.horizon_days,
-                extraction_date=request.extraction_date,
-                generated_at_token=generated_at_token,
-            )
-            local_path = self._local_store.write_frame(future_predict_frame, relative_path)
-            s3_uri = None
-            if request.upload_to_s3 and self._s3_store is not None:
-                s3_uri = self._s3_store.upload_dataframe(
-                    frame=future_predict_frame,
-                    relative_path=relative_path,
-                )
-
-            chart_relative_path = relative_path.with_name("forecast_chart.svg")
-            chart_local_path = self._write_forecast_chart(
-                frame=future_predict_frame,
-                relative_path=chart_relative_path,
-                symbol=symbol,
-            )
-            chart_s3_uri = None
-            if request.upload_to_s3 and self._s3_store is not None:
-                chart_s3_uri = self._s3_store.upload_file(
-                    local_path=chart_local_path,
-                    relative_path=chart_relative_path,
-                )
-
-            forecast_dates = pd.to_datetime(future_predict_frame["forecast_date"])
-            report_relative_path = relative_path.with_name("forecast_report.md")
-            report_local_path = self._write_forecast_report(
-                frame=future_predict_frame,
-                relative_path=report_relative_path,
-                symbol=symbol,
-                request=request,
-                generated_at_utc=generated_at_utc,
-                forecast_summary=forecast_summary,
-                normal_model_local_path=normal_model_local_path,
-                quantum_model_local_path=quantum_model_local_path,
-                chart_local_path=chart_local_path,
-            )
-            report_s3_uri = None
-            if request.upload_to_s3 and self._s3_store is not None:
-                report_s3_uri = self._s3_store.upload_file(
-                    local_path=report_local_path,
-                    relative_path=report_relative_path,
-                )
-            artifacts.append(
-                ForecastAssetArtifact(
+            pending_forecasts.append(
+                PendingForecastArtifact(
                     symbol=symbol.upper(),
-                    row_count=int(len(future_predict_frame.index)),
+                    future_predict_frame=future_predict_frame,
                     predict_types=tuple(predict_types),
-                    forecast_start_date=forecast_dates.iloc[0].strftime("%Y-%m-%d"),
-                    forecast_end_date=forecast_dates.iloc[-1].strftime("%Y-%m-%d"),
-                    last_observed_date=str(future_predict_frame["last_observed_date"].iloc[0]),
-                    last_observed_close=float(
-                        future_predict_frame["last_observed_close"].iloc[0]
-                    ),
+                    forecast_summary=forecast_summary,
                     normal_model_local_path=normal_model_local_path,
                     quantum_model_local_path=quantum_model_local_path,
                     normal_elapsed_ms=normal_elapsed_ms,
@@ -405,15 +371,25 @@ class GenerateForecastBatchUseCase:
                     quantum_elapsed_ms=quantum_elapsed_ms,
                     quantum_per_step_ms=quantum_per_step_ms,
                     timing_ratio=timing_ratio,
-                    forecast_summary=forecast_summary,
-                    local_path=str(local_path),
-                    s3_uri=s3_uri,
-                    report_local_path=str(report_local_path),
-                    report_s3_uri=report_s3_uri,
-                    chart_local_path=str(chart_local_path),
-                    chart_s3_uri=chart_s3_uri,
                 )
             )
+
+        gate_failures = self._evaluate_forecast_quality_gate(pending_forecasts)
+        if gate_failures and request.quality_gate_mode == "fail":
+            self._raise_forecast_quality_gate_failure(gate_failures)
+        if gate_failures:
+            print(
+                "WARNING: Forecast quality gate failed, but "
+                "quality_gate_mode=warn allows artifact publication:"
+            )
+            for failure in gate_failures:
+                print(f"- {failure}")
+        artifacts = self._materialize_pending_forecasts(
+            pending_forecasts=pending_forecasts,
+            request=request,
+            generated_at_utc=generated_at_utc,
+            generated_at_token=generated_at_token,
+        )
 
         unified_report_relative_path = self._build_unified_report_relative_path(
             extraction_date=request.extraction_date,
@@ -457,6 +433,8 @@ class GenerateForecastBatchUseCase:
                 "include_normal": request.include_normal,
                 "include_quantum": request.include_quantum,
                 "upload_to_s3": request.upload_to_s3,
+                "quality_gate_mode": request.quality_gate_mode,
+                "quality_gate_failures": gate_failures,
             },
             "asset_count": len(artifacts),
             "assets": [asdict(artifact) for artifact in artifacts],
@@ -485,6 +463,152 @@ class GenerateForecastBatchUseCase:
             unified_latest_report_local_path=str(unified_latest_report_local_path),
             unified_report_s3_uri=unified_report_s3_uri,
             assets=tuple(artifacts),
+        )
+
+    def _materialize_pending_forecasts(
+        self,
+        *,
+        pending_forecasts: list[PendingForecastArtifact],
+        request: ForecastBatchRequest,
+        generated_at_utc: str,
+        generated_at_token: str,
+    ) -> list[ForecastAssetArtifact]:
+        artifacts: list[ForecastAssetArtifact] = []
+        for pending in pending_forecasts:
+            symbol = pending.symbol
+            future_predict_frame = pending.future_predict_frame
+            relative_path = self._build_future_predict_relative_path(
+                source=request.source,
+                symbol=symbol,
+                lookback=request.lookback,
+                horizon_days=request.horizon_days,
+                extraction_date=request.extraction_date,
+                generated_at_token=generated_at_token,
+            )
+            local_path = self._local_store.write_frame(future_predict_frame, relative_path)
+            s3_uri = None
+            if request.upload_to_s3 and self._s3_store is not None:
+                s3_uri = self._s3_store.upload_dataframe(
+                    frame=future_predict_frame,
+                    relative_path=relative_path,
+                )
+
+            chart_relative_path = relative_path.with_name("forecast_chart.svg")
+            chart_local_path = self._write_forecast_chart(
+                frame=future_predict_frame,
+                relative_path=chart_relative_path,
+                symbol=symbol,
+            )
+            chart_s3_uri = None
+            if request.upload_to_s3 and self._s3_store is not None:
+                chart_s3_uri = self._s3_store.upload_file(
+                    local_path=chart_local_path,
+                    relative_path=chart_relative_path,
+                )
+
+            report_relative_path = relative_path.with_name("forecast_report.md")
+            report_local_path = self._write_forecast_report(
+                frame=future_predict_frame,
+                relative_path=report_relative_path,
+                symbol=symbol,
+                request=request,
+                generated_at_utc=generated_at_utc,
+                forecast_summary=pending.forecast_summary,
+                normal_model_local_path=pending.normal_model_local_path,
+                quantum_model_local_path=pending.quantum_model_local_path,
+                chart_local_path=chart_local_path,
+            )
+            report_s3_uri = None
+            if request.upload_to_s3 and self._s3_store is not None:
+                report_s3_uri = self._s3_store.upload_file(
+                    local_path=report_local_path,
+                    relative_path=report_relative_path,
+                )
+
+            forecast_dates = pd.to_datetime(future_predict_frame["forecast_date"])
+            artifacts.append(
+                ForecastAssetArtifact(
+                    symbol=symbol.upper(),
+                    row_count=int(len(future_predict_frame.index)),
+                    predict_types=pending.predict_types,
+                    forecast_start_date=forecast_dates.iloc[0].strftime("%Y-%m-%d"),
+                    forecast_end_date=forecast_dates.iloc[-1].strftime("%Y-%m-%d"),
+                    last_observed_date=str(future_predict_frame["last_observed_date"].iloc[0]),
+                    last_observed_close=float(
+                        future_predict_frame["last_observed_close"].iloc[0]
+                    ),
+                    normal_model_local_path=pending.normal_model_local_path,
+                    quantum_model_local_path=pending.quantum_model_local_path,
+                    normal_elapsed_ms=pending.normal_elapsed_ms,
+                    normal_per_step_ms=pending.normal_per_step_ms,
+                    quantum_elapsed_ms=pending.quantum_elapsed_ms,
+                    quantum_per_step_ms=pending.quantum_per_step_ms,
+                    timing_ratio=pending.timing_ratio,
+                    forecast_summary=pending.forecast_summary,
+                    local_path=str(local_path),
+                    s3_uri=s3_uri,
+                    report_local_path=str(report_local_path),
+                    report_s3_uri=report_s3_uri,
+                    chart_local_path=str(chart_local_path),
+                    chart_s3_uri=chart_s3_uri,
+                )
+            )
+        return artifacts
+
+    def _evaluate_forecast_quality_gate(
+        self,
+        pending_forecasts: list[PendingForecastArtifact],
+    ) -> list[str]:
+        failures: list[str] = []
+        for pending in pending_forecasts:
+            frame = pending.future_predict_frame
+            if "normal" not in set(frame.get("predict_type", pd.Series(dtype=str)).astype(str)):
+                continue
+            normal = frame.loc[frame["predict_type"].astype(str) == "normal"].copy()
+            predicted = pd.to_numeric(normal["predicted_close"], errors="coerce")
+            reasons: list[str] = []
+            if predicted.isna().any() or not np.isfinite(predicted.to_numpy(dtype=float)).all():
+                reasons.append("predicted_close has NaN or infinite values")
+            if len(predicted.index) > 1:
+                diffs = predicted.diff().dropna()
+                up_rate = float((diffs > 0).mean())
+            horizon = pd.to_numeric(
+                normal["horizon_return_from_last_observed"],
+                errors="coerce",
+            )
+            horizon_return = float(horizon.iloc[-1]) if not horizon.empty else 0.0
+            if abs(horizon_return) > 0.30:
+                reasons.append(
+                    "absolute horizon return "
+                    f"{horizon_return:.2%} exceeds 30%"
+                )
+            if len(predicted.index) > 1:
+                monotonic_path = bool((diffs >= 0).all() or (diffs <= 0).all())
+                directional_extreme = up_rate < 0.05 or up_rate > 0.95
+                if directional_extreme and abs(horizon_return) > 0.20:
+                    reasons.append(
+                        f"directional imbalance up_rate={up_rate:.2%} with "
+                        f"horizon_return={horizon_return:.2%}"
+                    )
+                if monotonic_path and abs(horizon_return) > 0.20:
+                    reasons.append(
+                        "monotonic forecast path with large cumulative drift "
+                        f"({horizon_return:.2%})"
+                    )
+            constraints = normal["prediction_constraint_applied"].fillna(False).astype(bool)
+            constraint_rate = float(constraints.mean()) if len(constraints.index) else 0.0
+            if constraint_rate > 0.50:
+                reasons.append(f"constraint_rate={constraint_rate:.2%} exceeds 50%")
+            if reasons:
+                failures.append(f"{pending.symbol}: " + "; ".join(reasons))
+        return failures
+
+    @staticmethod
+    def _raise_forecast_quality_gate_failure(failures: list[str]) -> None:
+        details = "\n".join(f"- {failure}" for failure in failures)
+        raise ValueError(
+            "Forecast quality gate failed before writing local/S3 artifacts:\n"
+            f"{details}"
         )
 
     def _ensure_tensorflow_available(self) -> None:
@@ -516,6 +640,8 @@ class GenerateForecastBatchUseCase:
             raise ValueError("quantum_model_name_prefix must not be blank.")
         if request.quantum_runtime_mode not in {"local", "cloud"}:
             raise ValueError("quantum_runtime_mode must be either 'local' or 'cloud'.")
+        if request.quality_gate_mode not in {"fail", "warn"}:
+            raise ValueError("quality_gate_mode must be either 'fail' or 'warn'.")
         if request.quantum_shots <= 0:
             raise ValueError("quantum_shots must be greater than zero.")
         if request.quantum_optimization_level not in {0, 1, 2, 3}:
@@ -704,6 +830,16 @@ class GenerateForecastBatchUseCase:
                     "prediction_target_mode": str(
                         payload.get("request", {}).get("prediction_target_mode", "price")
                     ),
+                    "feature_input_mode": str(
+                        payload.get("request", {}).get("feature_input_mode", "sequence_price")
+                    ),
+                    "sequence_input_kind": str(
+                        asset_payload.get("sequence_input_kind", "scaled_price")
+                    ),
+                    "sequence_length": str(asset_payload.get("sequence_length", lookback)),
+                    "engineered_feature_columns": json.dumps(
+                        asset_payload.get("engineered_feature_columns", [])
+                    ),
                 }
 
         fallback_path = self._models_root_dir / expected_model_name
@@ -713,6 +849,10 @@ class GenerateForecastBatchUseCase:
                 "training_manifest_local_path": None,
                 "training_generated_at_utc": None,
                 "prediction_target_mode": "price",
+                "feature_input_mode": "sequence_price",
+                "sequence_input_kind": "scaled_price",
+                "sequence_length": str(lookback),
+                "engineered_feature_columns": "[]",
             }
 
         raise FileNotFoundError(
@@ -772,6 +912,16 @@ class GenerateForecastBatchUseCase:
                 "training_generated_at_utc": str(payload.get("generated_at_utc")),
                 "prediction_target_mode": str(
                     payload.get("request", {}).get("prediction_target_mode", "price")
+                ),
+                "feature_input_mode": str(
+                    payload.get("request", {}).get("feature_input_mode", "sequence_price")
+                ),
+                "sequence_input_kind": str(
+                    asset_payload.get("sequence_input_kind", "scaled_price")
+                ),
+                "sequence_length": str(asset_payload.get("sequence_length", lookback)),
+                "engineered_feature_columns": json.dumps(
+                    asset_payload.get("engineered_feature_columns", [])
                 ),
             }
 
@@ -907,13 +1057,27 @@ class GenerateForecastBatchUseCase:
             input_window_end_date = pd.Timestamp(window_dates[-1])
             input_window_end_close = float(raw_window[-1])
 
-            prediction_input = scaled_window.reshape(1, request.lookback, 1)
+            prediction_input = self._build_normal_model_input(
+                raw_window=raw_window.astype(np.float64),
+                scaled_window=scaled_window,
+                request=request,
+                model_metadata=model_metadata,
+            )
             predicted_scaled = float(model.predict(prediction_input, verbose=0).reshape(-1)[0])
             model_prediction_target_mode = str(
                 model_metadata.get("prediction_target_mode") or "price"
             )
+            raw_model_predicted_close = None
             if model_prediction_target_mode == "return":
-                predicted_close = float(input_window_end_close * (1.0 + predicted_scaled))
+                raw_model_predicted_close = float(
+                    input_window_end_close * (1.0 + predicted_scaled)
+                )
+                calibrated_return = dampen_recursive_return_bias(
+                    predicted_return=predicted_scaled,
+                    forecast_step=step,
+                    horizon_days=request.horizon_days,
+                )
+                predicted_close = float(input_window_end_close * (1.0 + calibrated_return))
             else:
                 predicted_close = float(
                     self._inverse_scale_array(
@@ -934,6 +1098,9 @@ class GenerateForecastBatchUseCase:
                 forecast_step=step,
                 horizon_days=request.horizon_days,
                 scaler_metadata=scaler_metadata,
+                current_close=input_window_end_close,
+                model_prediction_target_mode=model_prediction_target_mode,
+                raw_model_close_override=raw_model_predicted_close,
             )
             predicted_close = stabilized.predicted_close
             predicted_scaled = float(stabilized.predicted_scaled or 0.0)
@@ -993,18 +1160,129 @@ class GenerateForecastBatchUseCase:
                 price_proxy_method=None,
             )
             row["model_prediction_target_mode"] = model_prediction_target_mode
+            row["feature_input_mode"] = str(
+                model_metadata.get("feature_input_mode") or "sequence_price"
+            )
+            row["sequence_input_kind"] = str(
+                model_metadata.get("sequence_input_kind") or "scaled_price"
+            )
             row["step_elapsed_ms"] = round(step_elapsed_ms, 3)
             rows.append(row)
 
             raw_window = np.concatenate(
                 [raw_window[1:], np.asarray([predicted_close], dtype=np.float32)]
             )
+            next_scaled_window_value = float(
+                self._scale_array(
+                    np.asarray([predicted_close], dtype=np.float32),
+                    min_offset=scaler_metadata["min_offset"],
+                    scale=scaler_metadata["scale"],
+                )[0]
+            )
             scaled_window = np.concatenate(
-                [scaled_window[1:], np.asarray([predicted_scaled], dtype=np.float32)]
+                [
+                    scaled_window[1:],
+                    np.asarray([next_scaled_window_value], dtype=np.float32),
+                ]
             )
             window_dates = window_dates[1:] + [forecast_date]
 
         return rows, per_step_ms
+
+    def _build_normal_model_input(
+        self,
+        *,
+        raw_window: np.ndarray,
+        scaled_window: np.ndarray,
+        request: ForecastBatchRequest,
+        model_metadata: dict[str, str | None],
+    ) -> Any:
+        feature_input_mode = str(
+            model_metadata.get("feature_input_mode") or "sequence_price"
+        )
+        if feature_input_mode != "technical_returns":
+            return scaled_window.reshape(1, request.lookback, 1)
+
+        sequence_returns = self._build_return_sequence(raw_window).reshape(
+            1,
+            request.lookback - 1,
+            1,
+        )
+        feature_columns = self._parse_engineered_feature_columns(
+            model_metadata.get("engineered_feature_columns")
+        )
+        feature_values = self._build_engineered_feature_vector(
+            raw_window=raw_window,
+            feature_columns=feature_columns,
+        )
+        return [sequence_returns.astype(np.float32), feature_values.astype(np.float32)]
+
+    @staticmethod
+    def _build_return_sequence(raw_window: np.ndarray) -> np.ndarray:
+        previous = raw_window[:-1]
+        current = raw_window[1:]
+        returns = np.zeros(len(current), dtype=np.float32)
+        non_zero_mask = np.abs(previous) > 1e-8
+        returns[non_zero_mask] = current[non_zero_mask] / previous[non_zero_mask] - 1.0
+        return returns
+
+    @staticmethod
+    def _parse_engineered_feature_columns(raw_value: str | None) -> list[str]:
+        if not raw_value:
+            return []
+        try:
+            parsed = json.loads(str(raw_value))
+        except json.JSONDecodeError:
+            return []
+        return [str(item) for item in parsed]
+
+    def _build_engineered_feature_vector(
+        self,
+        *,
+        raw_window: np.ndarray,
+        feature_columns: list[str],
+    ) -> np.ndarray:
+        values = self._compute_engineered_features(raw_window)
+        missing = [column for column in feature_columns if column not in values]
+        if missing:
+            raise ValueError(
+                "Trained Keras model requires engineered features that cannot be "
+                f"computed during forecast: {missing}"
+            )
+        return np.asarray([[values[column] for column in feature_columns]], dtype=np.float32)
+
+    @staticmethod
+    def _compute_engineered_features(raw_window: np.ndarray) -> dict[str, float]:
+        daily_returns = GenerateFeatureDatasetUseCase._compute_daily_returns(raw_window)  # type: ignore[attr-defined]
+        current_price = float(raw_window[-1])
+        sma_5 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 5)  # type: ignore[attr-defined]
+        sma_10 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 10)  # type: ignore[attr-defined]
+        sma_20 = GenerateFeatureDatasetUseCase._compute_sma(raw_window, 20)  # type: ignore[attr-defined]
+        return {
+            "feature_return_1d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 1),  # type: ignore[attr-defined]
+            "feature_return_5d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 5),  # type: ignore[attr-defined]
+            "feature_return_10d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 10),  # type: ignore[attr-defined]
+            "feature_return_20d": GenerateFeatureDatasetUseCase._compute_window_return(raw_window, 20),  # type: ignore[attr-defined]
+            "feature_sma_gap_5d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_5),  # type: ignore[attr-defined]
+            "feature_sma_gap_10d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_10),  # type: ignore[attr-defined]
+            "feature_sma_gap_20d": GenerateFeatureDatasetUseCase._compute_gap_ratio(current_price, sma_20),  # type: ignore[attr-defined]
+            "feature_ema_gap_5d": GenerateFeatureDatasetUseCase._compute_gap_ratio(  # type: ignore[attr-defined]
+                current_price,
+                GenerateFeatureDatasetUseCase._compute_ema(raw_window, 5),  # type: ignore[attr-defined]
+            ),
+            "feature_ema_gap_10d": GenerateFeatureDatasetUseCase._compute_gap_ratio(  # type: ignore[attr-defined]
+                current_price,
+                GenerateFeatureDatasetUseCase._compute_ema(raw_window, 10),  # type: ignore[attr-defined]
+            ),
+            "feature_volatility_5d": GenerateFeatureDatasetUseCase._compute_volatility(daily_returns, 5),  # type: ignore[attr-defined]
+            "feature_volatility_10d": GenerateFeatureDatasetUseCase._compute_volatility(daily_returns, 10),  # type: ignore[attr-defined]
+            "feature_trend_slope_10d": GenerateFeatureDatasetUseCase._compute_trend_slope(raw_window, 10),  # type: ignore[attr-defined]
+            "feature_trend_slope_20d": GenerateFeatureDatasetUseCase._compute_trend_slope(raw_window, 20),  # type: ignore[attr-defined]
+            "feature_up_day_ratio_5d": GenerateFeatureDatasetUseCase._compute_up_day_ratio(daily_returns, 5),  # type: ignore[attr-defined]
+            "feature_up_day_ratio_10d": GenerateFeatureDatasetUseCase._compute_up_day_ratio(daily_returns, 10),  # type: ignore[attr-defined]
+            "feature_position_in_window": GenerateFeatureDatasetUseCase._compute_position_in_window(raw_window),  # type: ignore[attr-defined]
+            "feature_window_max_drawdown": GenerateFeatureDatasetUseCase._compute_max_drawdown(raw_window),  # type: ignore[attr-defined]
+        }
 
     def _build_quantum_rows(
         self,
@@ -1408,6 +1686,9 @@ class GenerateForecastBatchUseCase:
         forecast_step: int,
         horizon_days: int,
         scaler_metadata: dict[str, float] | None,
+        current_close: float | None = None,
+        model_prediction_target_mode: str = "price",
+        raw_model_close_override: float | None = None,
     ) -> ForecastStepStabilizationResult:
         predicted_close = float(guardrail.constrained_close)
         (
@@ -1424,7 +1705,12 @@ class GenerateForecastBatchUseCase:
             horizon_days=horizon_days,
         )
         predicted_scaled = None
-        if scaler_metadata is not None:
+        if model_prediction_target_mode == "return" and current_close is not None:
+            predicted_scaled = self._safe_return(
+                current_value=predicted_close,
+                reference_value=float(current_close),
+            )
+        elif scaler_metadata is not None:
             predicted_scaled = float(
                 self._scale_array(
                     np.asarray([predicted_close], dtype=np.float32),
@@ -1434,7 +1720,11 @@ class GenerateForecastBatchUseCase:
             )
         return ForecastStepStabilizationResult(
             predicted_close=predicted_close,
-            raw_model_close=float(guardrail.raw_model_close),
+            raw_model_close=(
+                float(raw_model_close_override)
+                if raw_model_close_override is not None
+                else float(guardrail.raw_model_close)
+            ),
             predicted_scaled=predicted_scaled,
             prediction_return_cap=float(guardrail.return_cap),
             prediction_constraint_applied=bool(guardrail.applied or horizon_clamp_applied),

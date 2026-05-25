@@ -67,8 +67,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        default=30,
-        help="Forecast table row limit to render into each static page.",
+        default=None,
+        help=(
+            "Optional forecast table row limit to render into each static page. "
+            "Defaults to the complete materialized horizon."
+        ),
     )
     parser.add_argument(
         "--extraction-date",
@@ -111,8 +114,9 @@ def main() -> None:
             "symbol": index_symbol,
             "predict_type": "all",
             "lookback": str(args.lookback),
-            "limit": str(args.limit),
         }
+        if args.limit is not None:
+            params["limit"] = str(args.limit)
         if args.horizon_days is not None:
             params["horizon_days"] = str(args.horizon_days)
         if args.extraction_date:

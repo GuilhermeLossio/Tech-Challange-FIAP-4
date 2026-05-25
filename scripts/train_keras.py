@@ -110,6 +110,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--feature-input-mode",
+        choices=("sequence_price", "technical_returns"),
+        default="sequence_price",
+        help=(
+            "Model input shape. Use technical_returns to train a two-input model "
+            "from return sequences plus engineered feature_* columns."
+        ),
+    )
+    parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist training artifacts locally and skip S3 upload.",
@@ -203,12 +212,13 @@ def main() -> int:
         verbose=args.verbose,
         model_name_prefix=args.model_name_prefix,
         prediction_target_mode=args.prediction_target_mode,
+        feature_input_mode=args.feature_input_mode,
     )
     try:
         result = service.train(request)
     except TrainingInterruptedError as exc:
         raise SystemExit(str(exc)) from exc
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from exc
 
     print("Keras training completed.")

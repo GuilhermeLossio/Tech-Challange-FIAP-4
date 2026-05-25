@@ -17,13 +17,16 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 try:
     import tensorflow as tf
-    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint # pyright: ignore[reportMissingModuleSource]
-    from tensorflow.keras.layers import Dense, Dropout, Input, LSTM # pyright: ignore[reportMissingModuleSource]
-    from tensorflow.keras.models import Sequential # type: ignore
-    from tensorflow.keras.optimizers import Adam # pyright: ignore[reportMissingModuleSource]
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau  # pyright: ignore[reportMissingModuleSource]
+    from tensorflow.keras.layers import Concatenate, Dense, Dropout, Input, LSTM, BatchNormalization  # pyright: ignore[reportMissingModuleSource]
+    from tensorflow.keras.models import Model, Sequential  # type: ignore
+    from tensorflow.keras.optimizers import Adam  # pyright: ignore[reportMissingModuleSource]
+    from tensorflow.keras.regularizers import l2  # pyright: ignore[reportMissingModuleSource]
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on local environment
     tf = None
-    EarlyStopping = ModelCheckpoint = Dense = Dropout = Input = LSTM = Sequential = Adam = None
+    EarlyStopping = ModelCheckpoint = ReduceLROnPlateau = None
+    Concatenate = Dense = Dropout = Input = LSTM = BatchNormalization = Model = Sequential = Adam = None
+    l2 = None
     _TENSORFLOW_IMPORT_ERROR: ModuleNotFoundError | None = exc
 else:
     _TENSORFLOW_IMPORT_ERROR = None
@@ -58,12 +61,15 @@ class KerasTrainingRequest:
     lookback: int = 60
     epochs: int = 100
     batch_size: int = 32
-    patience: int = 10
-    learning_rate: float = 0.001
+    patience: int = 20                  # ← era 10; mais tolerância ao plateau ruidoso
+    learning_rate: float = 0.0005       # ← era 0.001; mais estável para retornos pequenos
     seed: int = 42
     verbose: int = 1
     model_name_prefix: str = "lstm"
     prediction_target_mode: str = "price"
+    feature_input_mode: str = "sequence_price"
+    l2_reg: float = 1e-4               # ← novo: regularização L2 nas camadas Dense
+    clip_norm: float = 1.0             # ← novo: gradient clipping para estabilidade
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,10 @@ class KerasModelArtifact:
     validation_count: int
     test_count: int
     feature_count: int
+    feature_input_mode: str
+    sequence_input_kind: str
+    sequence_length: int
+    engineered_feature_columns: tuple[str, ...]
     epochs_ran: int
     best_epoch: int
     immutable_model_local_path: str
@@ -143,7 +153,7 @@ class KerasTrainingService:
 
         for symbol in request.symbols:
             tf.keras.backend.clear_session()
-            frame, scaler_metadata = self._load_training_frame(
+            frame, scaler_metadata, dataset_kind = self._load_training_frame(
                 source=request.source,
                 symbol=symbol,
                 extraction_date=request.extraction_date,
@@ -154,6 +164,7 @@ class KerasTrainingService:
                 frame=frame,
                 request=request,
                 scaler_metadata=scaler_metadata,
+                dataset_kind=dataset_kind,
             )
             self._set_random_seed(request.seed)
 
@@ -168,36 +179,54 @@ class KerasTrainingService:
             model_path = self._local_store.prepare_path(model_relative_path)
 
             model = self._build_model(
-                input_shape=(request.lookback, 1),
+                sequence_input_shape=dataset["sequence_input_shape"],
+                engineered_feature_count=dataset["engineered_feature_count"],
                 learning_rate=request.learning_rate,
+                feature_input_mode=request.feature_input_mode,
+                l2_reg=request.l2_reg,
+                clip_norm=request.clip_norm,
             )
 
             monitor_metric = "val_loss" if dataset["validation_count"] > 0 else "loss"
+
+            # ── Callbacks ──────────────────────────────────────────────────────
             callbacks = [
                 EarlyStopping(
                     monitor=monitor_metric,
                     patience=request.patience,
                     restore_best_weights=True,
+                    min_delta=1e-6,         # ← novo: ignora melhorias irrelevantes
                 ),
                 ModelCheckpoint(
                     filepath=str(model_path),
                     monitor=monitor_metric,
                     save_best_only=True,
                 ),
+                # ← novo: reduz LR pela metade se ficar 7 epochs sem melhorar
+                ReduceLROnPlateau(
+                    monitor=monitor_metric,
+                    factor=0.5,
+                    patience=7,
+                    min_lr=1e-6,
+                    verbose=1,
+                ),
             ]
 
+            # ── Shuffle só faz sentido para retornos (não para preço sequencial) ──
+            should_shuffle = request.prediction_target_mode == "return"
+
             fit_kwargs: dict[str, Any] = {
-                "x": dataset["X_train"],
+                "x": dataset["X_train_model"],
                 "y": dataset["y_train_scaled"],
                 "epochs": request.epochs,
                 "batch_size": request.batch_size,
                 "callbacks": callbacks,
                 "verbose": request.verbose,
-                "shuffle": False,
+                "shuffle": should_shuffle,  # ← era sempre False
             }
             if dataset["validation_count"] > 0:
                 fit_kwargs["validation_data"] = (
-                    dataset["X_validation"],
+                    dataset["X_validation_model"],
                     dataset["y_validation_scaled"],
                 )
 
@@ -213,6 +242,7 @@ class KerasTrainingService:
                     symbol=symbol,
                     checkpoint_path=model_path,
                 ) from exc
+
             if not model_path.exists():
                 model.save(model_path)
             model = tf.keras.models.load_model(model_path)
@@ -252,7 +282,7 @@ class KerasTrainingService:
 
             train_metrics = self._evaluate_split(
                 model=model,
-                X=dataset["X_train"],
+                X=dataset["X_train_model"],
                 y_scaled=dataset["y_train_scaled"],
                 y_raw=dataset["y_train_raw"],
                 current_raw=dataset["current_train_raw"],
@@ -261,7 +291,7 @@ class KerasTrainingService:
             )
             validation_metrics = self._evaluate_split(
                 model=model,
-                X=dataset["X_validation"],
+                X=dataset["X_validation_model"],
                 y_scaled=dataset["y_validation_scaled"],
                 y_raw=dataset["y_validation_raw"],
                 current_raw=dataset["current_validation_raw"],
@@ -270,7 +300,7 @@ class KerasTrainingService:
             )
             test_metrics = self._evaluate_split(
                 model=model,
-                X=dataset["X_test"],
+                X=dataset["X_test_model"],
                 y_scaled=dataset["y_test_scaled"],
                 y_raw=dataset["y_test_raw"],
                 current_raw=dataset["current_test_raw"],
@@ -363,7 +393,11 @@ class KerasTrainingService:
                     train_count=dataset["train_count"],
                     validation_count=dataset["validation_count"],
                     test_count=dataset["test_count"],
-                    feature_count=1,
+                    feature_count=dataset["model_feature_count"],
+                    feature_input_mode=request.feature_input_mode,
+                    sequence_input_kind=dataset["sequence_input_kind"],
+                    sequence_length=dataset["sequence_length"],
+                    engineered_feature_columns=tuple(dataset["engineered_feature_columns"]),
                     epochs_ran=history_payload["epochs_ran"],
                     best_epoch=history_payload["best_epoch"],
                     immutable_model_local_path=str(model_path),
@@ -401,6 +435,9 @@ class KerasTrainingService:
                 "verbose": request.verbose,
                 "model_name_prefix": request.model_name_prefix,
                 "prediction_target_mode": request.prediction_target_mode,
+                "feature_input_mode": request.feature_input_mode,
+                "l2_reg": request.l2_reg,
+                "clip_norm": request.clip_norm,
             },
             "asset_count": len(artifacts),
             "assets": [asdict(artifact) for artifact in artifacts],
@@ -428,6 +465,8 @@ class KerasTrainingService:
             assets=tuple(artifacts),
         )
 
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
     def _ensure_tensorflow_available(self) -> None:
         if _TENSORFLOW_IMPORT_ERROR is not None:
             raise RuntimeError(
@@ -454,6 +493,23 @@ class KerasTrainingService:
             raise ValueError("model_name_prefix must not be blank.")
         if request.prediction_target_mode not in {"price", "return"}:
             raise ValueError("prediction_target_mode must be either 'price' or 'return'.")
+        if request.feature_input_mode not in {"sequence_price", "technical_returns"}:
+            raise ValueError(
+                "feature_input_mode must be either 'sequence_price' or "
+                "'technical_returns'."
+            )
+        if (
+            request.feature_input_mode == "technical_returns"
+            and request.prediction_target_mode != "return"
+        ):
+            raise ValueError(
+                "feature_input_mode='technical_returns' requires "
+                "prediction_target_mode='return'."
+            )
+        if request.l2_reg < 0:
+            raise ValueError("l2_reg must be non-negative.")
+        if request.clip_norm <= 0:
+            raise ValueError("clip_norm must be greater than zero.")
 
     def _load_training_frame(
         self,
@@ -463,8 +519,8 @@ class KerasTrainingService:
         extraction_date: date,
         lookback: int,
         target_column: str,
-    ) -> tuple[pd.DataFrame, dict[str, float]]:
-        frame, scaler_metadata, _ = load_preferred_training_frame(
+    ) -> tuple[pd.DataFrame, dict[str, float], str]:
+        frame, scaler_metadata, dataset_kind = load_preferred_training_frame(
             processed_root_dir=self._processed_root_dir,
             source=source,
             symbol=symbol,
@@ -472,7 +528,7 @@ class KerasTrainingService:
             lookback=lookback,
             target_column=target_column,
         )
-        return frame, scaler_metadata
+        return frame, scaler_metadata, dataset_kind
 
     def _build_training_dataset(
         self,
@@ -480,7 +536,14 @@ class KerasTrainingService:
         frame: pd.DataFrame,
         request: KerasTrainingRequest,
         scaler_metadata: dict[str, float],
+        dataset_kind: str,
     ) -> dict[str, Any]:
+        if request.feature_input_mode == "technical_returns" and dataset_kind != "feature":
+            raise ValueError(
+                "feature_input_mode='technical_returns' requires a fresh "
+                "feature_manifest.json. Run scripts/generate_features.py after "
+                "scripts/generate_refined.py."
+            )
         feature_columns = [
             f"{request.target_column}_t_minus_{lag}"
             for lag in range(request.lookback, 0, -1)
@@ -507,9 +570,28 @@ class KerasTrainingService:
             ordered["target_date"] = pd.to_datetime(ordered["target_date"])
             ordered = ordered.sort_values("target_date").reset_index(drop=True)
 
-        X = ordered.loc[:, feature_columns].to_numpy(dtype=np.float32).reshape(
-            -1, request.lookback, 1
+        scaled_sequence = ordered.loc[:, feature_columns].to_numpy(dtype=np.float32)
+        raw_sequence = self._inverse_scale(
+            scaled_sequence,
+            min_offset=scaler_metadata["min_offset"],
+            scale=scaler_metadata["scale"],
+        ).astype(np.float32)
+        X_price = scaled_sequence.reshape(-1, request.lookback, 1)
+        X_returns = self._build_sequence_return_tensor(raw_sequence)
+        engineered_feature_columns = self._select_engineered_feature_columns(
+            ordered=ordered,
+            feature_input_mode=request.feature_input_mode,
         )
+        X_engineered = (
+            ordered.loc[:, engineered_feature_columns].to_numpy(dtype=np.float32)
+            if engineered_feature_columns
+            else np.empty((len(ordered.index), 0), dtype=np.float32)
+        )
+        X_model: Any
+        if request.feature_input_mode == "technical_returns":
+            X_model = [X_returns, X_engineered]
+        else:
+            X_model = X_price
         current_raw = self._inverse_scale(
             ordered[feature_columns[-1]].to_numpy(dtype=np.float32),
             min_offset=scaler_metadata["min_offset"],
@@ -539,22 +621,91 @@ class KerasTrainingService:
 
         return {
             "row_count": int(len(ordered.index)),
-            "X_train": X[train_mask],
+            "X_train": X_price[train_mask],
+            "X_train_model": self._slice_model_inputs(X_model, train_mask),
             "y_train_scaled": y_scaled[train_mask],
             "y_train_raw": y_raw[train_mask],
             "current_train_raw": current_raw[train_mask],
-            "X_validation": X[validation_mask],
+            "X_validation": X_price[validation_mask],
+            "X_validation_model": self._slice_model_inputs(X_model, validation_mask),
             "y_validation_scaled": y_scaled[validation_mask],
             "y_validation_raw": y_raw[validation_mask],
             "current_validation_raw": current_raw[validation_mask],
-            "X_test": X[test_mask],
+            "X_test": X_price[test_mask],
+            "X_test_model": self._slice_model_inputs(X_model, test_mask),
             "y_test_scaled": y_scaled[test_mask],
             "y_test_raw": y_raw[test_mask],
             "current_test_raw": current_raw[test_mask],
             "train_count": int(train_mask.sum()),
             "validation_count": int(validation_mask.sum()),
             "test_count": int(test_mask.sum()),
+            "sequence_input_shape": (
+                (request.lookback - 1, 1)
+                if request.feature_input_mode == "technical_returns"
+                else (request.lookback, 1)
+            ),
+            "sequence_input_kind": (
+                "returns"
+                if request.feature_input_mode == "technical_returns"
+                else "scaled_price"
+            ),
+            "sequence_length": (
+                request.lookback - 1
+                if request.feature_input_mode == "technical_returns"
+                else request.lookback
+            ),
+            "engineered_feature_columns": tuple(engineered_feature_columns),
+            "engineered_feature_count": len(engineered_feature_columns),
+            "model_feature_count": (
+                len(engineered_feature_columns) + 1
+                if request.feature_input_mode == "technical_returns"
+                else 1
+            ),
         }
+
+    @staticmethod
+    def _slice_model_inputs(X_model: Any, mask: np.ndarray) -> Any:
+        if isinstance(X_model, list):
+            return [part[mask] for part in X_model]
+        return X_model[mask]
+
+    @staticmethod
+    def _build_sequence_return_tensor(raw_sequence: np.ndarray) -> np.ndarray:
+        previous = raw_sequence[:, :-1]
+        current = raw_sequence[:, 1:]
+        returns = np.zeros_like(current, dtype=np.float32)
+        non_zero_mask = np.abs(previous) > 1e-8
+        returns[non_zero_mask] = current[non_zero_mask] / previous[non_zero_mask] - 1.0
+        return returns.reshape(raw_sequence.shape[0], raw_sequence.shape[1] - 1, 1)
+
+    @staticmethod
+    def _select_engineered_feature_columns(
+        *,
+        ordered: pd.DataFrame,
+        feature_input_mode: str,
+    ) -> list[str]:
+        if feature_input_mode != "technical_returns":
+            return []
+        excluded = {
+            "feature_current_price",
+            "feature_window_mean",
+            "feature_window_std",
+            "feature_window_min",
+            "feature_window_max",
+            "feature_window_range",
+        }
+        columns = [
+            column
+            for column in ordered.columns
+            if column.startswith("feature_") and column not in excluded
+        ]
+        if not columns:
+            raise ValueError(
+                "feature_input_mode='technical_returns' requires a feature dataset "
+                "with engineered feature_* columns. Run scripts/generate_features.py "
+                "after scripts/generate_refined.py."
+            )
+        return columns
 
     @staticmethod
     def _build_target_return_array(
@@ -579,22 +730,75 @@ class KerasTrainingService:
     def _build_model(
         self,
         *,
-        input_shape: tuple[int, int],
+        sequence_input_shape: tuple[int, int],
+        engineered_feature_count: int,
         learning_rate: float,
-    ) -> Sequential:
-        model = Sequential(
-            [
-                Input(shape=input_shape),
-                LSTM(128, return_sequences=True),
-                Dropout(0.2),
-                LSTM(64, return_sequences=False),
-                Dropout(0.2),
-                Dense(32, activation="relu"),
-                Dense(1),
-            ]
-        )
+        feature_input_mode: str,
+        l2_reg: float,
+        clip_norm: float,
+    ) -> Any:
+        """
+        technical_returns  →  LSTM(128→64) + Dense(64) branch → merge → Dense(64→32) → output
+        sequence_price     →  LSTM(128→64) → Dense(32) → output
+
+        Mudanças em relação à versão anterior:
+        - Capacidade dobrada: LSTM 64→128, 32→64; Dense 32→64 no merge
+        - BatchNormalization antes de cada bloco Dense para estabilizar gradientes
+        - L2 regularization nas camadas Dense para reduzir overfitting
+        - Gradient clipping via clipnorm no Adam
+        - learning_rate configurável (default 0.0005 ao invés de 0.001)
+        """
+        reg = l2(l2_reg)
+
+        if feature_input_mode == "technical_returns":
+            # ── Branch sequencial (retornos diários) ──
+            sequence_input = Input(shape=sequence_input_shape, name="sequence_returns")
+            x = LSTM(128, return_sequences=True)(sequence_input)      # ← era 64
+            x = Dropout(0.2)(x)
+            x = LSTM(64, return_sequences=False)(x)                   # ← era 32
+            x = Dropout(0.2)(x)
+
+            # ── Branch features técnicas ──
+            feature_input = Input(
+                shape=(engineered_feature_count,),
+                name="engineered_features",
+            )
+            f = BatchNormalization()(feature_input)                    # ← novo
+            f = Dense(64, activation="relu", kernel_regularizer=reg)(f)  # ← era 32
+            f = Dropout(0.1)(f)
+
+            # ── Merge ──
+            merged = Concatenate()([x, f])
+            merged = BatchNormalization()(merged)                      # ← novo
+            merged = Dense(64, activation="relu", kernel_regularizer=reg)(merged)  # ← era 32
+            merged = Dropout(0.2)(merged)                              # ← novo dropout
+            merged = Dense(32, activation="relu", kernel_regularizer=reg)(merged)  # ← nova camada
+            output = Dense(1)(merged)
+
+            model = Model(inputs=[sequence_input, feature_input], outputs=output)
+
+        else:
+            # ── Modo preço sequencial ──
+            model = Sequential(
+                [
+                    Input(shape=sequence_input_shape),
+                    LSTM(128, return_sequences=True),
+                    Dropout(0.2),
+                    LSTM(64, return_sequences=False),
+                    Dropout(0.2),
+                    BatchNormalization(),                               # ← novo
+                    Dense(64, activation="relu", kernel_regularizer=reg),  # ← era 32
+                    Dropout(0.2),                                       # ← novo dropout
+                    Dense(32, activation="relu", kernel_regularizer=reg),  # ← nova camada
+                    Dense(1),
+                ]
+            )
+
         model.compile(
-            optimizer=Adam(learning_rate=learning_rate),
+            optimizer=Adam(
+                learning_rate=learning_rate,
+                clipnorm=clip_norm,            # ← novo: evita explosão de gradiente
+            ),
             loss="mse",
             metrics=["mae"],
         )
@@ -625,15 +829,16 @@ class KerasTrainingService:
     def _evaluate_split(
         self,
         *,
-        model: Sequential,
-        X: np.ndarray,
+        model: Any,
+        X: Any,
         y_scaled: np.ndarray,
         y_raw: np.ndarray,
         current_raw: np.ndarray,
         scaler_metadata: dict[str, float],
         prediction_target_mode: str,
     ) -> SplitMetrics:
-        if len(X) == 0:
+        sample_count = len(X[0]) if isinstance(X, list) else len(X)
+        if sample_count == 0:
             return SplitMetrics(
                 sample_count=0,
                 loss_mse=None,
@@ -670,7 +875,7 @@ class KerasTrainingService:
             )
 
         return SplitMetrics(
-            sample_count=int(len(X)),
+            sample_count=int(sample_count),
             loss_mse=float(evaluation[0]),
             mae_scaled=float(evaluation[1]) if len(evaluation) > 1 else None,
             mae=mae,
@@ -721,9 +926,16 @@ class KerasTrainingService:
 | Melhor epoca | `{history_payload["best_epoch"]}` |
 | Batch size | `{request.batch_size}` |
 | Paciencia do early stopping | `{request.patience}` |
-| Learning rate | `{request.learning_rate}` |
+| Learning rate inicial | `{request.learning_rate}` |
+| L2 regularization | `{request.l2_reg}` |
+| Gradient clip norm | `{request.clip_norm}` |
 | Seed | `{request.seed}` |
 | Prediction target mode | `{request.prediction_target_mode}` |
+| Feature input mode | `{request.feature_input_mode}` |
+| Sequence input kind | `{dataset["sequence_input_kind"]}` |
+| Sequence length | `{dataset["sequence_length"]}` |
+| Engineered feature count | `{dataset["engineered_feature_count"]}` |
+| Shuffle no treino | `{"sim (modo retorno)" if request.prediction_target_mode == "return" else "nao (modo preco)"}` |
 
 ## Dataset
 
@@ -757,8 +969,11 @@ class KerasTrainingService:
 ## Notas Tecnicas
 
 - Este relatorio descreve apenas o comportamento de treinamento. A qualidade real deve ser avaliada nas previsoes geradas contra baselines.
-- O LSTM recebe uma janela univariada de lags, portanto pode subutilizar contexto de mercado e ajustar ruido de preco.
+- Em `sequence_price`, o LSTM recebe uma janela univariada de preco escalado.
+- Em `technical_returns`, o LSTM recebe retornos sequenciais e features tecnicas; colunas absolutas de preco nao entram no modelo.
 - Grandes diferencas entre validacao e teste indicam generalizacao temporal fraca, nao evidencia pronta para producao.
+- O ReduceLROnPlateau reduz o learning rate automaticamente quando val_loss estagna, permitindo convergencia mais fina sem treinar manualmente com LR menor.
+- Shuffle ativado para modo retorno: retornos diarios tem baixa autocorrelacao, e a ordem temporal nao e essencial para o sinal; o shuffle reduz vies de sequencia.
 """
         destination.write_text(content, encoding="utf-8")
 
@@ -955,15 +1170,6 @@ class KerasTrainingService:
         destination.write_text(svg, encoding="utf-8")
 
     @staticmethod
-    def _empty_svg(title: str, message: str) -> str:
-        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="260" viewBox="0 0 840 260">
-<rect width="100%" height="100%" fill="#ffffff" />
-<text x="42" y="42" font-size="20" font-weight="700">{escape(title)}</text>
-<text x="42" y="92" font-size="14">{escape(message)}</text>
-</svg>
-"""
-
-    @staticmethod
     def _inverse_scale(
         values: np.ndarray,
         *,
@@ -973,6 +1179,15 @@ class KerasTrainingService:
         if scale == 0:
             raise ValueError("Cannot inverse scale predictions because scale is zero.")
         return (values - min_offset) / scale
+
+    @staticmethod
+    def _empty_svg(title: str, message: str) -> str:
+        return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="260" viewBox="0 0 840 260">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="42" y="42" font-size="20" font-weight="700">{escape(title)}</text>
+<text x="42" y="92" font-size="14">{escape(message)}</text>
+</svg>
+"""
 
     @staticmethod
     def _to_path_safe_timestamp(generated_at_utc: str) -> str:

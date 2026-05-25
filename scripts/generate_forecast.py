@@ -151,6 +151,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--quality-gate-mode",
+        choices=("fail", "warn"),
+        default="fail",
+        help=(
+            "Use fail to block publication when the classical forecast is "
+            "degenerate. Use warn to publish anyway and record warnings."
+        ),
+    )
+    parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist forecast files locally and skip S3 upload.",
@@ -394,6 +403,7 @@ def main() -> int:
         quantum_optimization_level=args.quantum_optimization_level,
         confirm_ibm_runtime_cost=args.confirm_ibm_runtime_cost,
         max_cloud_quantum_predictions=args.max_cloud_quantum_predictions,
+        quality_gate_mode=args.quality_gate_mode,
     )
 
     if args.forecast_end_date:

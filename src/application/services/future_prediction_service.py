@@ -125,7 +125,7 @@ class FuturePredictionService:
         if not symbol_root.exists():
             return None
 
-        candidates: list[tuple[date, str, int]] = []
+        candidates: list[tuple[datetime, date, int]] = []
         for horizon_partition in symbol_root.glob("horizon_days=*"):
             try:
                 horizon_days = int(horizon_partition.name.split("=", 1)[-1])
@@ -145,8 +145,11 @@ class FuturePredictionService:
                 generated_partitions = sorted(extraction_partition.glob("generated_at=*"))
                 for generated_partition in generated_partitions:
                     if (generated_partition / "future_predict.parquet").exists():
+                        generated_at = self._parse_generated_at_partition(
+                            generated_partition,
+                        )
                         candidates.append(
-                            (extraction_date, generated_partition.name, horizon_days)
+                            (generated_at, extraction_date, horizon_days)
                         )
 
         if not candidates:
@@ -302,15 +305,22 @@ class FuturePredictionService:
                 "Run `python scripts/generate_forecast.py` first."
             )
 
-        selected_extraction_date = (
-            extraction_date
-            or self.resolve_effective_extraction_date(
+        if extraction_date is None:
+            latest_dataset_path = self._resolve_latest_dataset_path(
+                symbol_root=symbol_root,
+            )
+            if latest_dataset_path is not None:
+                return latest_dataset_path
+
+            selected_extraction_date = self.resolve_effective_extraction_date(
                 symbol=symbol,
                 requested_extraction_date=None,
                 lookback=lookback,
                 horizon_days=horizon_days,
             )
-        )
+        else:
+            selected_extraction_date = extraction_date
+
         extraction_root = symbol_root / f"extraction_date={selected_extraction_date.isoformat()}"
         if not extraction_root.exists():
             raise FileNotFoundError(
@@ -329,6 +339,31 @@ class FuturePredictionService:
         if not dataset_path.exists():
             raise FileNotFoundError(f"Future prediction parquet not found: {dataset_path}")
         return dataset_path
+
+    def _resolve_latest_dataset_path(self, *, symbol_root: Path) -> Path | None:
+        candidates: list[tuple[datetime, Path]] = []
+        for generated_partition in symbol_root.glob("extraction_date=*/generated_at=*"):
+            dataset_path = generated_partition / "future_predict.parquet"
+            if dataset_path.exists():
+                candidates.append(
+                    (
+                        self._parse_generated_at_partition(generated_partition),
+                        dataset_path,
+                    )
+                )
+        if not candidates:
+            return None
+        return max(candidates)[1]
+
+    @staticmethod
+    def _parse_generated_at_partition(generated_partition: Path) -> datetime:
+        token = generated_partition.name.split("=", 1)[-1]
+        for fmt in ("%Y%m%dT%H%M%SZ", "%Y%m%dT%H%M%S"):
+            try:
+                return datetime.strptime(token, fmt)
+            except ValueError:
+                continue
+        return datetime.min
 
     def _build_symbol_root(
         self,

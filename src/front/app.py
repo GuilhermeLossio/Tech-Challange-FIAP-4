@@ -77,7 +77,7 @@ def create_app() -> Flask:
             lookback=lookback,
             requested_extraction_date=_parse_iso_date(selected_extraction_date),
         )
-        row_limit = _parse_positive_int(request.args.get("limit"), default=12)
+        row_limit = _parse_optional_positive_int(request.args.get("limit"))
 
         future_result = None
         comparison_future_result = None
@@ -185,6 +185,12 @@ def create_app() -> Flask:
             if future_result
             else []
         )
+        forecast_window_summary = _build_forecast_window_summary(
+            future_result=future_result,
+            comparison_future_result=comparison_future_result,
+            selected_predict_type=selected_predict_type,
+            row_limit=row_limit,
+        )
         outlook_cards = _build_outlook_cards(
             comparison_future_result.rows if comparison_future_result else tuple(),
             base_close=(
@@ -237,9 +243,11 @@ def create_app() -> Flask:
             lookback=lookback,
             horizon_days=horizon_days,
             row_limit=row_limit,
+            row_limit_value=str(row_limit) if row_limit is not None else "",
             next_day_prediction=next_day_prediction,
             future_result=future_result,
             comparison_future_result=comparison_future_result,
+            forecast_window_summary=forecast_window_summary,
             historical_window=historical_window,
             training_summary=training_summary,
             market_context_chart=market_context_chart,
@@ -275,6 +283,16 @@ def _parse_positive_int(raw_value: str | None, *, default: int) -> int:
     return value if value > 0 else default
 
 
+def _parse_optional_positive_int(raw_value: str | None) -> int | None:
+    if raw_value is None or not raw_value.strip():
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _resolve_front_horizon_days(
     *,
     raw_value: str | None,
@@ -303,6 +321,78 @@ def _resolve_front_horizon_days(
             return DEFAULT_HORIZON_DAYS
         return available_horizons[0]
     return DEFAULT_HORIZON_DAYS
+
+
+def _build_forecast_window_summary(
+    *,
+    future_result: Any | None,
+    comparison_future_result: Any | None,
+    selected_predict_type: str,
+    row_limit: int | None,
+) -> dict[str, Any] | None:
+    result = future_result or comparison_future_result
+    full_result = comparison_future_result or future_result
+    if result is None:
+        return None
+
+    available_rows = tuple(full_result.rows) if full_result is not None else tuple(result.rows)
+    returned_rows = tuple(result.rows)
+    predict_types = (
+        ", ".join(result.available_predict_types)
+        if selected_predict_type == "all"
+        else selected_predict_type
+    )
+    model_cards = _build_forecast_model_cards(available_rows)
+    return {
+        "symbol": result.symbol,
+        "generated_at": result.generated_at,
+        "generated_at_utc": result.generated_at_utc,
+        "extraction_date": result.extraction_date,
+        "last_observed_date": result.last_observed_date,
+        "last_observed_close": float(result.last_observed_close),
+        "available_forecast_start_date": result.available_forecast_start_date,
+        "available_forecast_end_date": result.available_forecast_end_date,
+        "returned_forecast_start_date": result.returned_forecast_start_date,
+        "returned_forecast_end_date": result.returned_forecast_end_date,
+        "available_row_count": len(available_rows),
+        "returned_row_count": len(returned_rows),
+        "predict_types": predict_types,
+        "model_cards": model_cards,
+        "row_limit": row_limit,
+        "is_limited": row_limit is not None and len(returned_rows) <= row_limit,
+    }
+
+
+def _build_forecast_model_cards(
+    forecast_rows: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, str], ...]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in forecast_rows:
+        grouped[_canonical_predict_type(row)].append(dict(row))
+
+    cards: list[dict[str, str]] = []
+    for predict_type, rows in sorted(grouped.items()):
+        if not rows:
+            continue
+        rows.sort(key=lambda item: int(item.get("forecast_step", 0)))
+        first_row = rows[0]
+        model_name = str(first_row.get("model_name") or "unknown")
+        feature_input_mode = str(first_row.get("feature_input_mode") or "n/a")
+        sequence_input_kind = str(first_row.get("sequence_input_kind") or "n/a")
+        target_mode = str(first_row.get("model_prediction_target_mode") or "n/a")
+        model_family = str(first_row.get("model_family") or "n/a")
+        cards.append(
+            {
+                "predict_type": predict_type,
+                "title": "Standard forecast" if predict_type == "normal" else "Quantum forecast",
+                "model_name": model_name,
+                "feature_input_mode": feature_input_mode,
+                "sequence_input_kind": sequence_input_kind,
+                "target_mode": target_mode,
+                "model_family": model_family,
+            }
+        )
+    return tuple(cards)
 
 
 def _build_market_context_chart(
@@ -340,6 +430,9 @@ def _build_market_context_chart(
     max_value = max(all_values)
     if abs(max_value - min_value) < 1e-9:
         max_value = min_value + 1.0
+    y_padding = max((max_value - min_value) * 0.08, abs(history[-1][1]) * 0.01, 1.0)
+    min_value = max(min_value - y_padding, 0.0)
+    max_value = max_value + y_padding
 
     def x_for(index: int) -> float:
         return padding + index * ((width - 2 * padding) / (span_count - 1))
@@ -377,6 +470,16 @@ def _build_market_context_chart(
             )
         first_row = rows[0]
         last_row = rows[-1]
+        last_value = float(last_row["predicted_close"])
+        day_one_value = float(first_row["predicted_close"])
+        final_delta_abs = last_value - float(last_history_value)
+        final_delta_pct = (
+            (last_value / float(last_history_value) - 1.0) * 100.0
+            if abs(float(last_history_value)) > 1e-8
+            else 0.0
+        )
+        endpoint_x = x_for(last_history_index + int(last_row["forecast_step"]))
+        endpoint_y = y_for(last_value)
         forecast_series.append(
             {
                 "name": predict_type,
@@ -384,15 +487,31 @@ def _build_market_context_chart(
                 "color": colors.get(predict_type, "#334155"),
                 "dasharray": dasharrays.get(predict_type, ""),
                 "polyline": " ".join(points),
-                "day_one_value": float(first_row["predicted_close"]),
+                "day_one_value": day_one_value,
                 "day_one_date": str(first_row["forecast_date"]),
-                "last_value": float(last_row["predicted_close"]),
+                "last_value": last_value,
                 "last_date": str(last_row["forecast_date"]),
+                "final_delta_abs": final_delta_abs,
+                "final_delta_pct": final_delta_pct,
+                "final_delta_label": (
+                    f"{final_delta_pct:+.2f}% (${final_delta_abs:+.2f})"
+                ),
+                "endpoint_x": endpoint_x,
+                "endpoint_y": endpoint_y,
+                "endpoint_tone": (
+                    "positive" if final_delta_abs > 0 else "negative" if final_delta_abs < 0 else "neutral"
+                ),
             }
         )
 
     y_guides = []
-    for value in (max_value, (max_value + min_value) / 2.0, min_value):
+    for value in (
+        max_value,
+        max_value - (max_value - min_value) * 0.25,
+        (max_value + min_value) / 2.0,
+        min_value + (max_value - min_value) * 0.25,
+        min_value,
+    ):
         y_guides.append(
             {
                 "value": value,
@@ -411,6 +530,9 @@ def _build_market_context_chart(
         "forecast_series": forecast_series,
         "boundary_x": last_history_x,
         "boundary_label": last_history_date,
+        "base_value": float(last_history_value),
+        "base_y": last_history_y,
+        "base_label": f"Last close ${float(last_history_value):.2f}",
         "x_labels": (
             {"label": str(history[0][0]), "x": x_for(0)},
             {"label": last_history_date, "x": last_history_x},
@@ -705,6 +827,12 @@ def _build_forecast_report(
     return {
         "symbol": comparison_future_result.symbol,
         "last_observed_close": last_close,
+        "last_observed_date": comparison_future_result.last_observed_date,
+        "available_forecast_start_date": comparison_future_result.available_forecast_start_date,
+        "available_forecast_end_date": comparison_future_result.available_forecast_end_date,
+        "returned_forecast_start_date": comparison_future_result.returned_forecast_start_date,
+        "returned_forecast_end_date": comparison_future_result.returned_forecast_end_date,
+        "generated_at": comparison_future_result.generated_at,
         "horizon_days": horizon_days,
         "seed": seed,
         "metric_cards": tuple(metric_cards),
@@ -952,10 +1080,10 @@ def _build_company_snapshot_rows(
             result = (
                 comparison_future_result
                 if item == selected_symbol and comparison_future_result is not None
-                else future_prediction_service.load_forecasts(
+                else _load_company_snapshot_forecasts(
+                    future_prediction_service=future_prediction_service,
                     symbol=item,
                     extraction_date=parsed_extraction_date,
-                    predict_type="all",
                     lookback=lookback,
                     horizon_days=horizon_days,
                 )
@@ -1026,10 +1154,42 @@ def _build_company_snapshot_rows(
                     if normal_rows and normal_rows[0].get("prediction_return_cap") is not None
                     else None
                 ),
+                "extraction_date": result.extraction_date,
+                "horizon_days": int(result.horizon_days),
+                "generated_at": result.generated_at,
             }
         )
 
     return tuple(rows)
+
+
+def _load_company_snapshot_forecasts(
+    *,
+    future_prediction_service: FuturePredictionService,
+    symbol: str,
+    extraction_date: date | None,
+    lookback: int,
+    horizon_days: int,
+) -> Any:
+    try:
+        return future_prediction_service.load_forecasts(
+            symbol=symbol,
+            extraction_date=extraction_date,
+            predict_type="all",
+            lookback=lookback,
+            horizon_days=horizon_days,
+        )
+    except (FileNotFoundError, ValueError):
+        latest_horizon_days = future_prediction_service.resolve_latest_horizon_days(
+            symbol=symbol,
+            lookback=lookback,
+        )
+        return future_prediction_service.load_forecasts(
+            symbol=symbol,
+            predict_type="all",
+            lookback=lookback,
+            horizon_days=latest_horizon_days or horizon_days,
+        )
 
 
 def _build_overview_metrics(
