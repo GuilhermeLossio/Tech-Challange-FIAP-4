@@ -92,6 +92,16 @@ def parse_args() -> argparse.Namespace:
         help="Prefix used when resolving Keras model files, for example `lstm` -> `models/lstm_nvda.keras`.",
     )
     parser.add_argument(
+        "--keras-model-selection",
+        choices=("best_metrics", "latest"),
+        default="best_metrics",
+        help=(
+            "How to resolve Keras forecast models from manifests. "
+            "`best_metrics` keeps the current MAE/RMSE-based selection; "
+            "`latest` uses the most recent trained_at partition."
+        ),
+    )
+    parser.add_argument(
         "--quantum-model-name-prefix",
         default="quantum_vqc",
         help="Prefix used when resolving quantum model files, for example `quantum_vqc` -> `models/quantum_vqc_nvda.json`.",
@@ -394,6 +404,7 @@ def main() -> int:
         horizon_days=horizon_days,
         model_name_prefix=args.model_name_prefix,
         quantum_model_name_prefix=args.quantum_model_name_prefix,
+        keras_model_selection=args.keras_model_selection,
         include_normal=not args.skip_normal,
         include_quantum=not args.skip_quant,
         upload_to_s3=upload_to_s3,

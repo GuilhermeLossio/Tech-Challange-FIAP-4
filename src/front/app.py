@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
+import math
 from pathlib import Path
 from typing import Any
 
@@ -173,17 +174,27 @@ def create_app() -> Flask:
         except (FileNotFoundError, ValueError) as exc:
             warnings.append(str(exc))
 
+        comparison_forecast_rows = (
+            tuple(_with_canonical_predict_type(row) for row in comparison_future_result.rows)
+            if comparison_future_result
+            else tuple()
+        )
+        if not comparison_forecast_rows and future_result is not None:
+            comparison_forecast_rows = tuple(
+                _with_canonical_predict_type(row) for row in future_result.rows
+            )
+
         market_context_chart = _build_market_context_chart(
             historical_window.rows if historical_window else tuple(),
-            comparison_future_result.rows if comparison_future_result else tuple(),
+            comparison_forecast_rows,
         )
         training_chart = _build_training_chart(
             training_summary.keras.history if training_summary and training_summary.keras else {}
         )
-        forecast_rows = (
-            [_with_canonical_predict_type(row) for row in future_result.rows]
-            if future_result
-            else []
+        forecast_rows = _filter_display_forecast_rows(
+            rows=comparison_forecast_rows,
+            selected_predict_type=selected_predict_type,
+            row_limit=row_limit,
         )
         forecast_window_summary = _build_forecast_window_summary(
             future_result=future_result,
@@ -406,6 +417,7 @@ def _build_market_context_chart(
         (str(row["date"]), float(row["close"]))
         for row in historical_rows
     ]
+    last_history_value = float(history[-1][1])
     grouped_forecasts: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in forecast_rows:
         grouped_forecasts[_canonical_predict_type(row)].append(dict(row))
@@ -414,18 +426,37 @@ def _build_market_context_chart(
         rows.sort(key=lambda item: int(item["forecast_step"]))
 
     history_count = len(history)
+    historical_returns = _compute_chart_returns([value for _, value in history])
+    realized_volatility = _realized_chart_volatility(historical_returns)
     max_forecast_step = max(
         (int(row["forecast_step"]) for row in forecast_rows),
         default=0,
     )
-    span_count = max(history_count + max_forecast_step, 2)
+    scenario_values_by_type = {
+        predict_type: _build_forecast_scenario_values(
+            rows=rows,
+            base_close=last_history_value,
+            historical_returns=historical_returns,
+            realized_volatility=realized_volatility,
+        )
+        for predict_type, rows in grouped_forecasts.items()
+    }
 
     width = 920.0
     height = 320.0
     padding = 30.0
+    left_padding = 70.0
+    plot_width = width - left_padding - padding
+    forecast_width_ratio = 0.28 if max_forecast_step > 0 else 0.0
+    boundary_x = left_padding + plot_width * (1.0 - forecast_width_ratio)
+    right_x = width - padding
     all_values = [value for _, value in history] + [
-        float(row["predicted_close"]) for row in forecast_rows
+        _chart_close_for_row(row, base_close=last_history_value)
+        for row in forecast_rows
     ]
+    for scenario_values in scenario_values_by_type.values():
+        all_values.extend(scenario_values.get("upside", []))
+        all_values.extend(scenario_values.get("downside", []))
     min_value = min(all_values)
     max_value = max(all_values)
     if abs(max_value - min_value) < 1e-9:
@@ -434,8 +465,16 @@ def _build_market_context_chart(
     min_value = max(min_value - y_padding, 0.0)
     max_value = max_value + y_padding
 
-    def x_for(index: int) -> float:
-        return padding + index * ((width - 2 * padding) / (span_count - 1))
+    def history_x_for(index: int) -> float:
+        if history_count <= 1:
+            return left_padding
+        return left_padding + index * ((boundary_x - left_padding) / (history_count - 1))
+
+    def forecast_x_for_step(forecast_step: int) -> float:
+        if max_forecast_step <= 0:
+            return boundary_x
+        normalized_step = min(max(int(forecast_step), 0), max_forecast_step)
+        return boundary_x + (normalized_step / max_forecast_step) * (right_x - boundary_x)
 
     def y_for(value: float) -> float:
         return height - padding - ((value - min_value) / (max_value - min_value)) * (
@@ -443,7 +482,7 @@ def _build_market_context_chart(
         )
 
     history_polyline = " ".join(
-        f"{x_for(index):.2f},{y_for(value):.2f}"
+        f"{history_x_for(index):.2f},{y_for(value):.2f}"
         for index, (_, value) in enumerate(history)
     )
 
@@ -457,29 +496,79 @@ def _build_market_context_chart(
         "normal": "",
         "quant": "9 6",
     }
-    last_history_index = history_count - 1
     last_history_date, last_history_value = history[-1]
-    last_history_x = x_for(last_history_index)
+    last_history_x = history_x_for(history_count - 1)
     last_history_y = y_for(last_history_value)
     for predict_type, rows in sorted(grouped_forecasts.items()):
         points = [f"{last_history_x:.2f},{last_history_y:.2f}"]
         for row in rows:
-            index = last_history_index + int(row["forecast_step"])
+            chart_close = _chart_close_for_row(row, base_close=float(last_history_value))
             points.append(
-                f"{x_for(index):.2f},{y_for(float(row['predicted_close'])):.2f}"
+                f"{forecast_x_for_step(int(row['forecast_step'])):.2f},"
+                f"{y_for(chart_close):.2f}"
             )
         first_row = rows[0]
         last_row = rows[-1]
-        last_value = float(last_row["predicted_close"])
-        day_one_value = float(first_row["predicted_close"])
+        last_value = _chart_close_for_row(last_row, base_close=float(last_history_value))
+        day_one_value = _chart_close_for_row(first_row, base_close=float(last_history_value))
         final_delta_abs = last_value - float(last_history_value)
         final_delta_pct = (
             (last_value / float(last_history_value) - 1.0) * 100.0
             if abs(float(last_history_value)) > 1e-8
             else 0.0
         )
-        endpoint_x = x_for(last_history_index + int(last_row["forecast_step"]))
+        endpoint_x = forecast_x_for_step(int(last_row["forecast_step"]))
         endpoint_y = y_for(last_value)
+        endpoint_label = _build_chart_value_label(
+            x=endpoint_x,
+            y=endpoint_y,
+            value=last_value,
+            width=width,
+            height=height,
+        )
+        scenario_values = scenario_values_by_type.get(predict_type, {})
+        upside_points = _build_scenario_polyline(
+            rows=rows,
+            values=scenario_values.get("upside", []),
+            anchor_x=last_history_x,
+            anchor_y=last_history_y,
+            x_for_step=forecast_x_for_step,
+            y_for_value=y_for,
+        )
+        downside_points = _build_scenario_polyline(
+            rows=rows,
+            values=scenario_values.get("downside", []),
+            anchor_x=last_history_x,
+            anchor_y=last_history_y,
+            x_for_step=forecast_x_for_step,
+            y_for_value=y_for,
+        )
+        upside_last_value = (
+            scenario_values.get("upside", [last_value])[-1]
+            if scenario_values.get("upside")
+            else last_value
+        )
+        downside_last_value = (
+            scenario_values.get("downside", [last_value])[-1]
+            if scenario_values.get("downside")
+            else last_value
+        )
+        upside_label = _build_chart_value_label(
+            x=endpoint_x,
+            y=y_for(upside_last_value),
+            value=upside_last_value,
+            width=width,
+            height=height,
+            preferred_vertical_offset=-16.0,
+        )
+        downside_label = _build_chart_value_label(
+            x=endpoint_x,
+            y=y_for(downside_last_value),
+            value=downside_last_value,
+            width=width,
+            height=height,
+            preferred_vertical_offset=18.0,
+        )
         forecast_series.append(
             {
                 "name": predict_type,
@@ -498,9 +587,16 @@ def _build_market_context_chart(
                 ),
                 "endpoint_x": endpoint_x,
                 "endpoint_y": endpoint_y,
+                "endpoint_label": endpoint_label,
                 "endpoint_tone": (
                     "positive" if final_delta_abs > 0 else "negative" if final_delta_abs < 0 else "neutral"
                 ),
+                "upside_polyline": upside_points,
+                "downside_polyline": downside_points,
+                "upside_last_value": upside_last_value,
+                "downside_last_value": downside_last_value,
+                "upside_label": upside_label,
+                "downside_label": downside_label,
             }
         )
 
@@ -522,6 +618,11 @@ def _build_market_context_chart(
     forecast_end_date = (
         max((str(row["forecast_date"]) for row in forecast_rows), default=last_history_date)
     )
+    forecast_end_x = (
+        forecast_x_for_step(max_forecast_step)
+        if max_forecast_step > 0
+        else last_history_x
+    )
     return {
         "width": width,
         "height": height,
@@ -533,10 +634,11 @@ def _build_market_context_chart(
         "base_value": float(last_history_value),
         "base_y": last_history_y,
         "base_label": f"Last close ${float(last_history_value):.2f}",
+        "label_x": 8.0,
         "x_labels": (
-            {"label": str(history[0][0]), "x": x_for(0)},
+            {"label": str(history[0][0]), "x": history_x_for(0)},
             {"label": last_history_date, "x": last_history_x},
-            {"label": forecast_end_date, "x": x_for(span_count - 1)},
+            {"label": forecast_end_date, "x": forecast_end_x},
         ),
         "y_guides": tuple(y_guides),
     }
@@ -580,6 +682,11 @@ def _build_outlook_cards(
         best_delta_abs, best_delta_pct = delta_payload(float(best_row["predicted_close"]))
         worst_delta_abs, worst_delta_pct = delta_payload(float(worst_row["predicted_close"]))
 
+        live_prediction_matches_batch = _live_prediction_matches_batch(
+            next_day_prediction=next_day_prediction,
+            first_row=first_row,
+        )
+
         if predict_type == "normal":
             acquisition_summary = (
                 "Generated from the offline Keras recursive forecast stored in "
@@ -589,7 +696,7 @@ def _build_outlook_cards(
                 f"The batch path rolls predicted closes forward for {len(rows)} business days.",
                 "The line shown here is directly materialized from the stored forecast dataset.",
             ]
-            if next_day_prediction is not None:
+            if live_prediction_matches_batch:
                 acquisition_points.append(
                     "The live D+1 Keras request also exposes a 95% interval for the first step."
                 )
@@ -603,7 +710,11 @@ def _build_outlook_cards(
                         f"${float(first_row['predicted_close']):.2f} using a "
                         f"+/-{float(return_cap) * 100.0:.2f}% daily return cap."
                     )
-            if next_day_prediction is not None and next_day_prediction.prediction_constraint_applied:
+            if (
+                live_prediction_matches_batch
+                and next_day_prediction is not None
+                and next_day_prediction.prediction_constraint_applied
+            ):
                 acquisition_points.append(
                     "The live D+1 standard estimate was also constrained by the "
                     "recent realized volatility guardrail."
@@ -652,13 +763,42 @@ def _build_outlook_cards(
                         "lower": float(next_day_prediction.lower_bound),
                         "upper": float(next_day_prediction.upper_bound),
                     }
-                    if predict_type == "normal" and next_day_prediction is not None
+                    if predict_type == "normal"
+                    and live_prediction_matches_batch
+                    and next_day_prediction is not None
                     else None
                 ),
             }
         )
 
     return tuple(cards)
+
+
+def _live_prediction_matches_batch(
+    *,
+    next_day_prediction: Any | None,
+    first_row: dict[str, Any],
+) -> bool:
+    if next_day_prediction is None:
+        return False
+
+    batch_model_name = str(first_row.get("model_name") or "").strip()
+    live_model_name = str(getattr(next_day_prediction, "model", "") or "").strip()
+    if not batch_model_name or batch_model_name != live_model_name:
+        return False
+
+    batch_extraction_date = str(first_row.get("extraction_date") or "").strip()
+    live_extraction_date = str(
+        getattr(next_day_prediction, "extraction_date", "") or ""
+    ).strip()
+    if batch_extraction_date and live_extraction_date != batch_extraction_date:
+        return False
+
+    batch_day_one_close = float(first_row["predicted_close"])
+    lower_bound = float(next_day_prediction.lower_bound)
+    upper_bound = float(next_day_prediction.upper_bound)
+    tolerance = max(abs(batch_day_one_close) * 0.02, 1.0)
+    return lower_bound - tolerance <= batch_day_one_close <= upper_bound + tolerance
 
 
 def _build_forecast_report(
@@ -1367,24 +1507,243 @@ def _describe_predict_type_availability(
     return "unavailable"
 
 
+def _filter_display_forecast_rows(
+    *,
+    rows: tuple[dict[str, Any], ...],
+    selected_predict_type: str,
+    row_limit: int | None,
+) -> list[dict[str, Any]]:
+    if selected_predict_type == "all":
+        selected_rows = list(rows)
+    else:
+        selected_rows = [
+            row for row in rows if _canonical_predict_type(row) == selected_predict_type
+        ]
+
+    selected_rows.sort(
+        key=lambda row: (
+            int(row.get("forecast_step") or 0),
+            _canonical_predict_type(row),
+        )
+    )
+    if row_limit is not None:
+        selected_rows = selected_rows[:row_limit]
+    return selected_rows
+
+
 def _canonical_predict_type(row: dict[str, Any]) -> str:
+    stored_predict_type = str(row.get("predict_type", "")).strip().lower()
+    if stored_predict_type in {"normal", "standard"}:
+        return "normal"
+    if stored_predict_type in {"quant", "quantum"}:
+        return "quant"
+
     model_family = str(row.get("model_family", "")).lower()
     model_name = str(row.get("model_name", "")).lower()
-    is_price_proxy = bool(row.get("is_price_proxy", False))
     if "quantum" in model_family or "vqc" in model_family or "quantum" in model_name:
-        return "quant"
-    if is_price_proxy:
         return "quant"
     if "keras" in model_family or "lstm" in model_family or "lstm" in model_name:
         return "normal"
-    return str(row.get("predict_type", "")).lower()
+    if bool(row.get("is_price_proxy", False)):
+        return "quant"
+    return stored_predict_type
 
 
 def _with_canonical_predict_type(row: dict[str, Any]) -> dict[str, Any]:
     payload = dict(row)
     payload.setdefault("stored_predict_type", payload.get("predict_type"))
     payload["predict_type"] = _canonical_predict_type(payload)
+    payload["predicted_step_return_text"] = _format_signed_percent(
+        _finite_float(payload.get("predicted_step_return"))
+    )
+    payload["predicted_step_return_tone"] = _tone_for_number(
+        _finite_float(payload.get("predicted_step_return"))
+    )
+    payload["step_elapsed_ms_text"] = _format_milliseconds(
+        _finite_float(payload.get("step_elapsed_ms"))
+    )
+    payload["predicted_direction_label"] = _resolve_direction_label(payload)
+    payload["price_proxy_label"] = "yes" if bool(payload.get("is_price_proxy")) else "no"
+    payload["guardrail_label"] = (
+        "Restrito"
+        if bool(payload.get("prediction_constraint_applied"))
+        else "Safe"
+        if "prediction_constraint_applied" in payload
+        else "N/A"
+    )
+    payload["guardrail_tone"] = (
+        "tag-amber"
+        if bool(payload.get("prediction_constraint_applied"))
+        else "tag-teal"
+        if "prediction_constraint_applied" in payload
+        else ""
+    )
     return payload
+
+
+def _resolve_direction_label(row: dict[str, Any]) -> str:
+    label = str(row.get("predicted_direction_label") or "").strip()
+    if label:
+        return label
+
+    direction = _finite_float(row.get("predicted_direction"))
+    if direction is not None:
+        return "up" if int(direction) == 1 else "down"
+
+    step_return = _finite_float(row.get("predicted_step_return"))
+    if step_return is not None:
+        return "up" if step_return > 0 else "down" if step_return < 0 else "flat"
+
+    return "N/A"
+
+
+def _chart_close_for_row(row: dict[str, Any], *, base_close: float) -> float:
+    predicted_close = _finite_float(row.get("predicted_close"))
+    if predicted_close is None:
+        return base_close
+
+    reference_close = _finite_float(row.get("input_window_end_close"))
+    step_return = _finite_float(row.get("predicted_step_return"))
+    if (
+        reference_close is not None
+        and step_return is not None
+        and abs(base_close) > 1e-8
+        and (predicted_close < base_close * 0.05 or predicted_close > base_close * 20.0)
+    ):
+        return max(reference_close * (1.0 + step_return), 0.0)
+
+    return predicted_close
+
+
+def _compute_chart_returns(values: list[float]) -> list[float]:
+    returns: list[float] = []
+    for previous, current in zip(values, values[1:]):
+        if abs(previous) <= 1e-8:
+            continue
+        step_return = current / previous - 1.0
+        if math.isfinite(step_return):
+            returns.append(float(step_return))
+    return returns
+
+
+def _realized_chart_volatility(returns: list[float]) -> float:
+    recent_returns = returns[-30:]
+    if not recent_returns:
+        return 0.01
+    mean_return = sum(recent_returns) / len(recent_returns)
+    variance = sum((value - mean_return) ** 2 for value in recent_returns) / len(recent_returns)
+    return max(math.sqrt(variance), 0.003)
+
+
+def _build_forecast_scenario_values(
+    *,
+    rows: list[dict[str, Any]],
+    base_close: float,
+    historical_returns: list[float],
+    realized_volatility: float,
+) -> dict[str, list[float]]:
+    upside: list[float] = []
+    downside: list[float] = []
+    recent_returns = historical_returns[-30:] or [0.0]
+    for index, row in enumerate(rows):
+        forecast_step = max(int(row.get("forecast_step") or index + 1), 1)
+        central_close = _chart_close_for_row(row, base_close=base_close)
+        replay_return = recent_returns[index % len(recent_returns)]
+        wiggle = replay_return * 0.25
+        scenario_band = min(realized_volatility * math.sqrt(float(forecast_step)) * 0.85, 0.35)
+        upside.append(max(central_close * (1.0 + scenario_band + wiggle), 0.0))
+        downside.append(max(central_close * (1.0 - scenario_band + wiggle), 0.0))
+    return {"upside": upside, "downside": downside}
+
+
+def _build_scenario_polyline(
+    *,
+    rows: list[dict[str, Any]],
+    values: list[float],
+    anchor_x: float,
+    anchor_y: float,
+    x_for_step: Any,
+    y_for_value: Any,
+) -> str:
+    if not rows or not values:
+        return ""
+
+    points = [f"{anchor_x:.2f},{anchor_y:.2f}"]
+    for row, value in zip(rows, values):
+        points.append(
+            f"{x_for_step(int(row['forecast_step'])):.2f},{y_for_value(value):.2f}"
+        )
+    return " ".join(points)
+
+
+def _build_chart_value_label(
+    *,
+    x: float,
+    y: float,
+    value: float,
+    width: float,
+    height: float,
+    preferred_vertical_offset: float = 0.0,
+) -> dict[str, Any]:
+    label_width = 58.0
+    label_height = 16.0
+    margin = 6.0
+    horizontal_offset = 10.0
+    anchor = "start"
+    label_x = x + horizontal_offset
+    if label_x + label_width > width - margin:
+        anchor = "end"
+        label_x = x - horizontal_offset
+    if label_x < margin:
+        anchor = "start"
+        label_x = margin
+
+    label_y = y + preferred_vertical_offset
+    min_y = margin + label_height
+    max_y = height - margin
+    label_y = min(max(label_y, min_y), max_y)
+
+    return {
+        "x": label_x,
+        "y": label_y,
+        "text_anchor": anchor,
+        "value": value,
+        "text": f"${value:.2f}",
+    }
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _format_signed_percent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value * 100.0:+.2f}%"
+
+
+def _format_milliseconds(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.1f} ms"
+
+
+def _tone_for_number(value: float | None) -> str:
+    if value is None:
+        return ""
+    if value > 0:
+        return "positive-text"
+    if value < 0:
+        return "negative-text"
+    return ""
 
 
 def formatMs(value: float | None) -> str:

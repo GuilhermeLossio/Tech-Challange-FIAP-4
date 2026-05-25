@@ -335,25 +335,40 @@
             <div class="panel-tags">
               <span class="tag">6 months</span>
               <span class="tag tag-teal">normal vs quant</span>
+              <button type="button" class="chart-zoom-button" data-chart-zoom="in" aria-label="Zoom in">+</button>
+              <button type="button" class="chart-zoom-button" data-chart-zoom="out" aria-label="Zoom out">-</button>
+              <button type="button" class="chart-zoom-button chart-zoom-reset" data-chart-zoom="reset" aria-label="Reset zoom">Reset</button>
             </div>
           </div>
 
           {% if market_context_chart %}
-          <svg class="forecast-chart forecast-chart-hero" viewBox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Six-month market context chart">
+          <svg id="market-context-chart" class="forecast-chart forecast-chart-hero" data-original-viewbox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" viewBox="0 0 {{ market_context_chart.width }} {{ market_context_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Six-month market context chart">
             {% for guide in market_context_chart.y_guides %}
             <line x1="0" x2="{{ market_context_chart.width }}" y1="{{ guide.y }}" y2="{{ guide.y }}" class="chart-guide"></line>
-            <text x="8" y="{{ guide.y - 6 }}" class="chart-label">${{ '%.2f'|format(guide.value) }}</text>
+            <text x="{{ market_context_chart.label_x }}" y="{{ guide.y - 6 }}" data-original-x="{{ market_context_chart.label_x }}" data-original-y="{{ guide.y - 6 }}" class="chart-label chart-y-axis-label">${{ '%.2f'|format(guide.value) }}</text>
             {% endfor %}
             <line x1="0" x2="{{ market_context_chart.width }}" y1="{{ market_context_chart.base_y }}" y2="{{ market_context_chart.base_y }}" class="chart-base"></line>
-            <text x="8" y="{{ market_context_chart.base_y + 14 }}" class="chart-base-label">{{ market_context_chart.base_label }}</text>
             <line x1="{{ market_context_chart.boundary_x }}" x2="{{ market_context_chart.boundary_x }}" y1="0" y2="{{ market_context_chart.height }}" class="chart-boundary"></line>
-            <polyline points="{{ market_context_chart.history_polyline }}" fill="none" stroke="{{ market_context_chart.history_color }}" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <polyline points="{{ market_context_chart.history_polyline }}" fill="none" stroke="{{ market_context_chart.history_color }}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
             {% for series in market_context_chart.forecast_series %}
-            <polyline points="{{ series.polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="3" stroke-dasharray="{{ series.dasharray }}" stroke-linecap="round" stroke-linejoin="round"></polyline>
-            <circle cx="{{ series.endpoint_x }}" cy="{{ series.endpoint_y }}" r="4.5" fill="{{ series.color }}" class="chart-endpoint"></circle>
+            {% if series.upside_polyline %}
+            <polyline points="{{ series.upside_polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="2.2" stroke-dasharray="4 7" stroke-linecap="round" stroke-linejoin="round" class="chart-scenario-line"></polyline>
+            {% endif %}
+            {% if series.downside_polyline %}
+            <polyline points="{{ series.downside_polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="2.2" stroke-dasharray="4 7" stroke-linecap="round" stroke-linejoin="round" class="chart-scenario-line"></polyline>
+            {% endif %}
+            <polyline points="{{ series.polyline }}" fill="none" stroke="{{ series.color }}" stroke-width="4.2" stroke-dasharray="{{ series.dasharray }}" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <circle cx="{{ series.endpoint_x }}" cy="{{ series.endpoint_y }}" r="5.5" fill="{{ series.color }}" class="chart-endpoint"></circle>
+            <text x="{{ series.endpoint_label.x }}" y="{{ series.endpoint_label.y }}" text-anchor="{{ series.endpoint_label.text_anchor }}" class="chart-value-label chart-value-label-main">{{ series.endpoint_label.text }}</text>
+            {% if series.upside_polyline %}
+            <text x="{{ series.upside_label.x }}" y="{{ series.upside_label.y }}" text-anchor="{{ series.upside_label.text_anchor }}" class="chart-value-label chart-value-label-scenario">{{ series.upside_label.text }}</text>
+            {% endif %}
+            {% if series.downside_polyline %}
+            <text x="{{ series.downside_label.x }}" y="{{ series.downside_label.y }}" text-anchor="{{ series.downside_label.text_anchor }}" class="chart-value-label chart-value-label-scenario">{{ series.downside_label.text }}</text>
+            {% endif %}
             {% endfor %}
             {% for label in market_context_chart.x_labels %}
-            <text x="{{ label.x }}" y="{{ market_context_chart.height - 6 }}" text-anchor="middle" class="chart-label">{{ label.label }}</text>
+            <text x="{{ label.x }}" y="{{ market_context_chart.height - 6 }}" data-original-x="{{ label.x }}" data-original-y="{{ market_context_chart.height - 6 }}" text-anchor="middle" class="chart-label chart-x-axis-label">{{ label.label }}</text>
             {% endfor %}
           </svg>
           <div class="legend-row chart-summary-row">
@@ -368,6 +383,7 @@
               <span>{{ series.label }}</span>
               <strong>D+1 ${{ '%.2f'|format(series.day_one_value) }}</strong>
               <strong>End ${{ '%.2f'|format(series.last_value) }}</strong>
+              <strong>Sim ${{ '%.2f'|format(series.downside_last_value) }}–${{ '%.2f'|format(series.upside_last_value) }}</strong>
               <strong class="{% if series.final_delta_abs >= 0 %}positive-text{% else %}negative-text{% endif %}">End {{ series.final_delta_label }}</strong>
             </div>
             {% endfor %}
@@ -440,13 +456,13 @@
           {% endif %}
         </section>
 
-        <!-- SEÃ‡ÃƒO ATUALIZADA: Telemetria e Tabela de PrediÃ§Ãµes -->
+        <!-- Forecast telemetry and detail rows -->
         <section class="panel-grid">
           <article class="panel" style="grid-column: 1 / -1;">
             <div class="panel-head">
               <div>
                 <div class="panel-title">Telemetria & Forecast Rows</div>
-                <div class="panel-subtitle">Monitoramento de previsÃµes, retornos, latÃªncia e seguranÃ§a por step.</div>
+                <div class="panel-subtitle">Prediction, return, latency, and guardrail monitoring by step.</div>
               </div>
               <span class="tag">{{ forecast_rows|length }} rows</span>
               {% if future_result %}<span class="tag tag-teal">{{ future_result.returned_forecast_start_date }} to {{ future_result.returned_forecast_end_date }}</span>{% endif %}
@@ -466,51 +482,40 @@
 
               <article class="report-kpi">
                 <div class="metric-label">Retorno no Step</div>
-                <div class="metric-value {% if current_step.predicted_step_return is defined and current_step.predicted_step_return is not none %}{% if current_step.predicted_step_return >= 0 %}positive-text{% else %}negative-text{% endif %}{% endif %}">
-                  {% if current_step.predicted_step_return is defined and current_step.predicted_step_return is not none %}
-                  {{ '+' if current_step.predicted_step_return >= 0 else '' }}{{ '%.2f'|format(current_step.predicted_step_return * 100.0) }}%
-                  {% else %}
-                  --
-                  {% endif %}
+                <div class="metric-value {{ current_step.predicted_step_return_tone }}">
+                  {{ current_step.predicted_step_return_text }}
                 </div>
-                <div class="metric-sub">VariaÃ§Ã£o projetada</div>
+                <div class="metric-sub">Projected variation</div>
               </article>
 
               <article class="report-kpi">
-                <div class="metric-label">Tempo de ExecuÃ§Ã£o</div>
+                <div class="metric-label">Execution Time</div>
                 <div class="metric-value" style="font-family: monospace;">
-                  {% if current_step.step_elapsed_ms is defined and current_step.step_elapsed_ms is not none %}
-                  {{ '%.1f'|format(current_step.step_elapsed_ms) }} <span style="font-size: 0.8em; color: #64748b;">ms</span>
-                  {% else %}
-                  --
-                  {% endif %}
+                  {{ current_step.step_elapsed_ms_text }}
                 </div>
-                <div class="metric-sub">LatÃªncia de inferÃªncia</div>
+                <div class="metric-sub">Inference latency</div>
               </article>
 
               <article class="report-kpi">
                 <div class="metric-label">Status do Guardrail</div>
                 <div style="margin-top: 0.5rem;">
-                  {% if current_step.prediction_constraint_applied %}
-                  <span class="tag tag-amber" style="font-size: 0.95rem;">IntervenÃ§Ã£o Ativa</span>
-                  <div class="metric-sub" style="margin-top: 0.25rem;">Valor capado/limitado</div>
-                  {% else %}
-                  <span class="tag tag-teal" style="font-size: 0.95rem;">Safe (Pass)</span>
-                  <div class="metric-sub" style="margin-top: 0.25rem;">Dentro dos limites normais</div>
-                  {% endif %}
+                  <span class="tag {{ current_step.guardrail_tone }}" style="font-size: 0.95rem;">{{ current_step.guardrail_label }}</span>
+                  <div class="metric-sub" style="margin-top: 0.25rem;">
+                    {% if current_step.guardrail_label == 'N/A' %}Sem informacao de guardrail{% elif current_step.prediction_constraint_applied %}Valor capado/limitado{% else %}Dentro dos limites normais{% endif %}
+                  </div>
                 </div>
               </article>
 
             </div>
 
-            <!-- TABELA DE HISTÃ“RICO COM VISUAIS APERFEIÃ‡OADOS -->
+            <!-- Forecast detail table -->
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
                     <th>Date</th>
                     <th>Type</th>
-                    <th>PrevisÃ£o de PreÃ§o</th>
+                    <th>Predicted Price</th>
                     <th>Retorno por step</th>
                     <th>Tempo de exec.</th>
                     <th>Guardrail</th>
@@ -524,40 +529,26 @@
                     <td>{{ row.forecast_date }}</td>
                     <td><span class="tag">{{ row.predict_type }}</span></td>
 
-                    <!-- PrevisÃ£o -->
+                    <!-- Prediction -->
                     <td><strong>${{ '%.2f'|format(row.predicted_close) }}</strong></td>
 
                     <!-- Retorno -->
-                    <td class="{% if row.predicted_step_return is defined and row.predicted_step_return is not none %}{% if row.predicted_step_return >= 0 %}positive-text{% else %}negative-text{% endif %}{% endif %}">
-                      {% if row.predicted_step_return is defined and row.predicted_step_return is not none %}
-                      <strong>{{ '+' if row.predicted_step_return >= 0 else '' }}{{ '%.2f'|format(row.predicted_step_return * 100.0) }}%</strong>
-                      {% else %}
-                      --
-                      {% endif %}
+                    <td class="{{ row.predicted_step_return_tone }}">
+                      <strong>{{ row.predicted_step_return_text }}</strong>
                     </td>
 
                     <!-- Tempo -->
                     <td style="font-family: monospace; color: #475569;">
-                      {% if row.step_elapsed_ms is defined and row.step_elapsed_ms is not none %}
-                      {{ '%.1f'|format(row.step_elapsed_ms) }} ms
-                      {% else %}
-                      --
-                      {% endif %}
+                      {{ row.step_elapsed_ms_text }}
                     </td>
 
                     <!-- Guardrail -->
                     <td>
-                      {% if row.prediction_constraint_applied is defined and row.prediction_constraint_applied %}
-                      <span class="tag tag-amber">Restrito</span>
-                      {% elif row.prediction_constraint_applied is defined %}
-                      <span class="tag tag-teal">Safe</span>
-                      {% else %}
-                      --
-                      {% endif %}
+                      <span class="tag {{ row.guardrail_tone }}">{{ row.guardrail_label }}</span>
                     </td>
 
                     <td>{{ row.predicted_direction_label }}</td>
-                    <td>{{ 'yes' if row.is_price_proxy else 'no' }}</td>
+                    <td>{{ row.price_proxy_label }}</td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -567,7 +558,7 @@
             <div class="empty-state">No forecast rows available.</div>
             {% endif %}
           </article>
-          <!-- FIM DA SEÃ‡ÃƒO ATUALIZADA -->
+          <!-- End forecast telemetry -->
 
           <article class="panel">
             <div class="panel-head">
@@ -719,5 +710,144 @@
       </main>
     </div>
     </div>
+    <script>
+      (() => {
+        const chart = document.getElementById("market-context-chart");
+        if (!chart) return;
+
+        const original = chart.dataset.originalViewbox.split(" ").map(Number);
+        let current = [...original];
+        const minZoomWidth = original[2] * 0.35;
+        let isDragging = false;
+        let dragStart = null;
+        let dragViewBox = null;
+        const xAxisLabels = [...chart.querySelectorAll(".chart-x-axis-label")];
+        const yAxisLabels = [...chart.querySelectorAll(".chart-y-axis-label")];
+
+        const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
+
+        const updateAxisLabels = () => {
+          const [x, y, width, height] = current;
+          const left = x;
+          const right = x + width;
+          const top = y;
+          const bottom = y + height;
+          const xMargin = width * 0.012;
+          const yMargin = height * 0.035;
+
+          yAxisLabels.forEach((label) => {
+            const originalY = Number(label.dataset.originalY);
+            label.setAttribute("x", (left + xMargin).toFixed(2));
+            label.setAttribute("y", clamp(originalY, top + yMargin, bottom - yMargin).toFixed(2));
+          });
+
+          xAxisLabels.forEach((label) => {
+            const originalX = Number(label.dataset.originalX);
+            label.setAttribute("x", clamp(originalX, left + xMargin, right - xMargin).toFixed(2));
+            label.setAttribute("y", (bottom - yMargin).toFixed(2));
+          });
+        };
+
+        const applyViewBox = () => {
+          chart.setAttribute("viewBox", current.map((value) => value.toFixed(2)).join(" "));
+          updateAxisLabels();
+        };
+
+        const clampViewBox = ([x, y, width, height]) => {
+          const clampedWidth = Math.min(Math.max(width, minZoomWidth), original[2]);
+          const clampedHeight = clampedWidth * (original[3] / original[2]);
+          const clampedX = Math.max(
+            original[0],
+            Math.min(x, original[0] + original[2] - clampedWidth)
+          );
+          const clampedY = Math.max(
+            original[1],
+            Math.min(y, original[1] + original[3] - clampedHeight)
+          );
+          return [clampedX, clampedY, clampedWidth, Math.min(clampedHeight, original[3])];
+        };
+
+        const pointInSvg = (event) => {
+          const rect = chart.getBoundingClientRect();
+          return {
+            x: current[0] + ((event.clientX - rect.left) / rect.width) * current[2],
+            y: current[1] + ((event.clientY - rect.top) / rect.height) * current[3],
+          };
+        };
+
+        const zoom = (factor, focalPoint = null) => {
+          const [x, y, width, height] = current;
+          const nextWidth = Math.max(width * factor, minZoomWidth);
+          const nextHeight = nextWidth * (original[3] / original[2]);
+          const focusX = focalPoint ? focalPoint.x : x + width / 2;
+          const focusY = focalPoint ? focalPoint.y : y + height / 2;
+          const xRatio = (focusX - x) / width;
+          const yRatio = (focusY - y) / height;
+          current = clampViewBox([
+            focusX - nextWidth * xRatio,
+            focusY - nextHeight * yRatio,
+            nextWidth,
+            nextHeight,
+          ]);
+          applyViewBox();
+        };
+
+        chart.addEventListener("wheel", (event) => {
+          event.preventDefault();
+          zoom(event.deltaY < 0 ? 0.88 : 1.12, pointInSvg(event));
+        }, { passive: false });
+
+        chart.addEventListener("pointerdown", (event) => {
+          isDragging = true;
+          dragStart = { x: event.clientX, y: event.clientY };
+          dragViewBox = [...current];
+          chart.setPointerCapture(event.pointerId);
+          chart.classList.add("is-dragging");
+        });
+
+        chart.addEventListener("pointermove", (event) => {
+          if (!isDragging || !dragStart || !dragViewBox) return;
+          const rect = chart.getBoundingClientRect();
+          const dx = ((event.clientX - dragStart.x) / rect.width) * dragViewBox[2];
+          const dy = ((event.clientY - dragStart.y) / rect.height) * dragViewBox[3];
+          current = clampViewBox([
+            dragViewBox[0] - dx,
+            dragViewBox[1] - dy,
+            dragViewBox[2],
+            dragViewBox[3],
+          ]);
+          applyViewBox();
+        });
+
+        const endDrag = (event) => {
+          if (!isDragging) return;
+          isDragging = false;
+          dragStart = null;
+          dragViewBox = null;
+          chart.classList.remove("is-dragging");
+          if (chart.hasPointerCapture(event.pointerId)) {
+            chart.releasePointerCapture(event.pointerId);
+          }
+        };
+
+        chart.addEventListener("pointerup", endDrag);
+        chart.addEventListener("pointercancel", endDrag);
+        chart.addEventListener("pointerleave", endDrag);
+
+        document.querySelectorAll("[data-chart-zoom]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const action = button.getAttribute("data-chart-zoom");
+            if (action === "in") zoom(0.78);
+            if (action === "out") zoom(1.22);
+            if (action === "reset") {
+              current = [...original];
+              applyViewBox();
+            }
+          });
+        });
+
+        updateAxisLabels();
+      })();
+    </script>
   </body>
 </html>

@@ -112,6 +112,7 @@ class ForecastBatchRequest:
     horizon_days: int = 30
     model_name_prefix: str = "lstm"
     quantum_model_name_prefix: str = "quantum_vqc"
+    keras_model_selection: str = "best_metrics"
     include_normal: bool = True
     include_quantum: bool = True
     upload_to_s3: bool = True
@@ -268,6 +269,7 @@ class GenerateForecastBatchUseCase:
                     target_column=request.target_column,
                     lookback=request.lookback,
                     model_name_prefix=request.model_name_prefix,
+                    model_selection=request.keras_model_selection,
                 )
                 normal_model_local_path = str(normal_metadata["model_local_path"])
                 normal_model = tf.keras.models.load_model(  # type: ignore[union-attr]
@@ -430,6 +432,7 @@ class GenerateForecastBatchUseCase:
                 "horizon_days": request.horizon_days,
                 "model_name_prefix": request.model_name_prefix,
                 "quantum_model_name_prefix": request.quantum_model_name_prefix,
+                "keras_model_selection": request.keras_model_selection,
                 "include_normal": request.include_normal,
                 "include_quantum": request.include_quantum,
                 "upload_to_s3": request.upload_to_s3,
@@ -636,6 +639,10 @@ class GenerateForecastBatchUseCase:
             raise ValueError("At least one predict type must be enabled.")
         if request.include_normal and not request.model_name_prefix.strip():
             raise ValueError("model_name_prefix must not be blank.")
+        if request.keras_model_selection not in {"best_metrics", "latest"}:
+            raise ValueError(
+                "keras_model_selection must be either 'best_metrics' or 'latest'."
+            )
         if request.include_quantum and not request.quantum_model_name_prefix.strip():
             raise ValueError("quantum_model_name_prefix must not be blank.")
         if request.quantum_runtime_mode not in {"local", "cloud"}:
@@ -760,18 +767,20 @@ class GenerateForecastBatchUseCase:
         target_column: str,
         lookback: int,
         model_name_prefix: str,
+        model_selection: str,
     ) -> dict[str, str | None]:
         expected_model_name = f"{model_name_prefix}_{symbol.lower()}.keras"
-        promoted_metadata = self._resolve_promoted_keras_model_metadata(
-            symbol=symbol,
-            requested_extraction_date=extraction_date,
-            source=source,
-            target_column=target_column,
-            lookback=lookback,
-            expected_model_name=expected_model_name,
-        )
-        if promoted_metadata is not None:
-            return promoted_metadata
+        if model_selection == "best_metrics":
+            promoted_metadata = self._resolve_promoted_keras_model_metadata(
+                symbol=symbol,
+                requested_extraction_date=extraction_date,
+                source=source,
+                target_column=target_column,
+                lookback=lookback,
+                expected_model_name=expected_model_name,
+            )
+            if promoted_metadata is not None:
+                return promoted_metadata
 
         manifests_root = (
             self._models_root_dir
@@ -780,7 +789,7 @@ class GenerateForecastBatchUseCase:
         )
         if manifests_root.exists():
             best_candidate: tuple[
-                tuple[float, float, float, float, int],
+                tuple[float, ...],
                 Path,
                 dict[str, Any],
                 dict[str, Any],
@@ -809,10 +818,13 @@ class GenerateForecastBatchUseCase:
                 if asset_payload is None:
                     continue
 
-                candidate_score = self._score_regression_asset(
-                    asset_payload=asset_payload,
-                    manifest_path=manifest_path,
-                )
+                if model_selection == "latest":
+                    candidate_score = (-float(self._trained_at_token(manifest_path)),)
+                else:
+                    candidate_score = self._score_regression_asset(
+                        asset_payload=asset_payload,
+                        manifest_path=manifest_path,
+                    )
                 if best_candidate is None or candidate_score < best_candidate[0]:
                     best_candidate = (
                         candidate_score,

@@ -80,6 +80,7 @@ class SplitMetrics:
     mae: float | None
     rmse: float | None
     mape: float | None
+    direction_accuracy: float | None
 
 
 @dataclass(frozen=True)
@@ -874,6 +875,13 @@ class KerasTrainingService:
                 * 100
             )
 
+        direction_accuracy = None
+        price_non_zero = np.abs(current_raw) > 1e-8
+        if price_non_zero.sum() > 1:
+            actual_dir    = np.sign(y_raw[price_non_zero] - current_raw[price_non_zero])
+            predicted_dir = np.sign(predictions_raw[price_non_zero] - current_raw[price_non_zero])
+            direction_accuracy = float((actual_dir == predicted_dir).mean() * 100)
+
         return SplitMetrics(
             sample_count=int(sample_count),
             loss_mse=float(evaluation[0]),
@@ -881,6 +889,7 @@ class KerasTrainingService:
             mae=mae,
             rmse=rmse,
             mape=mape,
+            direction_accuracy=direction_accuracy,
         )
 
     def _write_training_report(
@@ -948,8 +957,8 @@ class KerasTrainingService:
 
 ## Metricas
 
-| Split | Samples | Loss MSE | MAE scaled | MAE | RMSE | MAPE % |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Split | Samples | Loss MSE | MAE scaled | MAE | RMSE | MAPE % | Dir Acc % |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 {rows}
 
 ## Graficos
@@ -985,7 +994,8 @@ class KerasTrainingService:
             f"{KerasTrainingService._format_optional_float(metrics.mae_scaled)} | "
             f"{KerasTrainingService._format_optional_float(metrics.mae)} | "
             f"{KerasTrainingService._format_optional_float(metrics.rmse)} | "
-            f"{KerasTrainingService._format_optional_float(metrics.mape)} |"
+            f"{KerasTrainingService._format_optional_float(metrics.mape)} | "
+            f"{KerasTrainingService._format_optional_float(metrics.direction_accuracy)} |"
         )
 
     @staticmethod
@@ -1178,7 +1188,9 @@ class KerasTrainingService:
     ) -> np.ndarray:
         if scale == 0:
             raise ValueError("Cannot inverse scale predictions because scale is zero.")
-        return (values - min_offset) / scale
+        # MinMaxScaler: scaled = (x - min) * (1/(max-min))
+        # inverse:      x = values / scale + min_offset
+        return values / scale + min_offset
 
     @staticmethod
     def _empty_svg(title: str, message: str) -> str:

@@ -719,6 +719,13 @@ a {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   margin-bottom: 1rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.forecast-chart.is-dragging {
+  cursor: grabbing;
 }
 
 .forecast-chart-hero {
@@ -742,10 +749,67 @@ a {
   stroke-dasharray: 5 5;
 }
 
+.chart-scenario-line {
+  opacity: 0.55;
+}
+
+.chart-zoom-button {
+  border: 1px solid var(--border-light);
+  background: #ffffff;
+  color: var(--text-main);
+  border-radius: 6px;
+  min-width: 32px;
+  height: 28px;
+  padding: 0 0.65rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-zoom-button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.chart-zoom-reset {
+  min-width: 52px;
+}
+
 .chart-label {
   fill: var(--text-muted);
   font-size: 11px;
   font-family: var(--font-sans);
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+.chart-x-axis-label,
+.chart-y-axis-label {
+  font-weight: 700;
+}
+
+.chart-value-label {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.chart-value-label-main {
+  fill: var(--text-main);
+}
+
+.chart-value-label-scenario {
+  fill: var(--text-muted);
+  font-size: 11px;
+  opacity: 0.9;
 }
 
 .chart-base-label,
