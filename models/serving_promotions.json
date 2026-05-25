@@ -1,0 +1,62 @@
+{
+  "policy_name": "approved_serving_artifacts",
+  "policy_version": 2,
+  "generated_at_utc": "2026-05-25T18:20:00+00:00",
+  "notes": [
+    "Only artifacts listed here are eligible for online serving resolution.",
+    "Each approval must reference an immutable training_runs artifact and its source manifest.",
+    "Policy v2 aligns online serving with the latest materialized forecast package for extraction_date=2026-05-19."
+  ],
+  "approvals": [
+    {
+      "symbol": "AMD",
+      "extraction_date": "2026-05-19",
+      "trained_at": "20260525T030113Z",
+      "manifest_relative_path": "manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json",
+      "model_relative_path": "training_runs/source=yfinance/symbol=AMD/lookback=60/extraction_date=2026-05-19/trained_at=20260525T030113Z/lstm_return_amd.keras",
+      "approved_at_utc": "2026-05-25T18:20:00+00:00",
+      "approved_by": "project-alignment",
+      "reason": "Promoted to align API default serving with the latest 2026-05-19 normal/quant forecast package."
+    },
+    {
+      "symbol": "ASML",
+      "extraction_date": "2026-05-19",
+      "trained_at": "20260525T030113Z",
+      "manifest_relative_path": "manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json",
+      "model_relative_path": "training_runs/source=yfinance/symbol=ASML/lookback=60/extraction_date=2026-05-19/trained_at=20260525T030113Z/lstm_return_asml.keras",
+      "approved_at_utc": "2026-05-25T18:20:00+00:00",
+      "approved_by": "project-alignment",
+      "reason": "Promoted to align API default serving with the latest 2026-05-19 normal/quant forecast package."
+    },
+    {
+      "symbol": "NVDA",
+      "extraction_date": "2026-05-19",
+      "trained_at": "20260525T030113Z",
+      "manifest_relative_path": "manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json",
+      "model_relative_path": "training_runs/source=yfinance/symbol=NVDA/lookback=60/extraction_date=2026-05-19/trained_at=20260525T030113Z/lstm_return_nvda.keras",
+      "approved_at_utc": "2026-05-25T18:20:00+00:00",
+      "approved_by": "project-alignment",
+      "reason": "Promoted to align API default serving with the latest 2026-05-19 normal/quant forecast package."
+    },
+    {
+      "symbol": "QCOM",
+      "extraction_date": "2026-05-19",
+      "trained_at": "20260525T030113Z",
+      "manifest_relative_path": "manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json",
+      "model_relative_path": "training_runs/source=yfinance/symbol=QCOM/lookback=60/extraction_date=2026-05-19/trained_at=20260525T030113Z/lstm_return_qcom.keras",
+      "approved_at_utc": "2026-05-25T18:20:00+00:00",
+      "approved_by": "project-alignment",
+      "reason": "Promoted to align API default serving with the latest 2026-05-19 normal/quant forecast package."
+    },
+    {
+      "symbol": "TSM",
+      "extraction_date": "2026-05-19",
+      "trained_at": "20260525T030113Z",
+      "manifest_relative_path": "manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json",
+      "model_relative_path": "training_runs/source=yfinance/symbol=TSM/lookback=60/extraction_date=2026-05-19/trained_at=20260525T030113Z/lstm_return_tsm.keras",
+      "approved_at_utc": "2026-05-25T18:20:00+00:00",
+      "approved_by": "project-alignment",
+      "reason": "Promoted to align API default serving with the latest 2026-05-19 normal/quant forecast package."
+    }
+  ]
+}

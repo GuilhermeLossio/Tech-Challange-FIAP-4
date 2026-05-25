@@ -8,7 +8,7 @@ from src.application.services.predictor_service import StandardPredictorService
 
 
 DEFAULT_LOOKBACK = 60
-DEFAULT_HORIZON_DAYS = 30
+DEFAULT_HORIZON_DAYS = 162
 
 
 @dataclass(frozen=True)

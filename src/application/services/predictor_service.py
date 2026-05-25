@@ -40,6 +40,8 @@ class ModelResolution:
     training_manifest_local_path: Path | None
     training_generated_at_utc: str | None
     interval_width: float | None
+    prediction_target_mode: str = "price"
+    feature_input_mode: str = "sequence_price"
 
 
 @dataclass(frozen=True)
@@ -225,13 +227,16 @@ class StandardPredictorService:
         ).astype(np.float32)
         prediction_input = scaled_window.reshape(1, self._lookback, 1)
         predicted_scaled = float(model.predict(prediction_input, verbose=0).reshape(-1)[0])
-        predicted_close = float(
-            self._inverse_scale_array(
-                np.asarray([predicted_scaled], dtype=np.float32),
-                min_offset=scaler_metadata["min_offset"],
-                scale=scaler_metadata["scale"],
-            )[0]
-        )
+        if resolution.prediction_target_mode == "return":
+            predicted_close = float(raw_window[-1]) * (1.0 + predicted_scaled)
+        else:
+            predicted_close = float(
+                self._inverse_scale_array(
+                    np.asarray([predicted_scaled], dtype=np.float32),
+                    min_offset=scaler_metadata["min_offset"],
+                    scale=scaler_metadata["scale"],
+                )[0]
+            )
         guardrail = apply_standard_forecast_guardrail(
             raw_model_close=predicted_close,
             current_close=float(raw_window[-1]),
@@ -451,7 +456,6 @@ class StandardPredictorService:
         symbol: str,
         requested_extraction_date: date | None,
     ) -> ModelResolution | None:
-        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
         for promotion in self._promotion_registry.list_candidates(
             symbol=symbol,
             requested_extraction_date=requested_extraction_date,
@@ -459,8 +463,6 @@ class StandardPredictorService:
             manifest_path = promotion.manifest_local_path
             model_local_path = promotion.model_local_path
             if not manifest_path.exists() or not model_local_path.exists():
-                continue
-            if model_local_path.name.lower() != expected_model_name.lower():
                 continue
 
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -485,7 +487,7 @@ class StandardPredictorService:
 
             immutable_model_path = self._resolve_manifest_model_path(
                 asset_payload=asset_payload,
-                expected_model_name=expected_model_name,
+                expected_model_names=(model_local_path.name,),
                 require_immutable_path=True,
             )
             if immutable_model_path is None:
@@ -501,6 +503,8 @@ class StandardPredictorService:
                 training_manifest_local_path=manifest_path,
                 training_generated_at_utc=str(payload.get("generated_at_utc")),
                 interval_width=self._resolve_interval_width(asset_payload),
+                prediction_target_mode=self._resolve_prediction_target_mode(payload),
+                feature_input_mode=self._resolve_feature_input_mode(payload),
             )
         return None
 
@@ -511,7 +515,6 @@ class StandardPredictorService:
         requested_extraction_date: date | None,
     ) -> ModelResolution | None:
         best_candidate: tuple[tuple[float, float, float, float, int], ModelResolution] | None = None
-        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
         manifests_root = self._models_root_dir / "manifests"
         if not manifests_root.exists():
             return None
@@ -533,6 +536,10 @@ class StandardPredictorService:
                     or int(request_payload.get("lookback", self._lookback)) != self._lookback
                 ):
                     continue
+                expected_model_names = self._expected_model_names(
+                    symbol=symbol,
+                    request_payload=request_payload,
+                )
 
                 asset_payload = next(
                     (
@@ -546,7 +553,7 @@ class StandardPredictorService:
                     continue
                 model_local_path = self._resolve_manifest_model_path(
                     asset_payload=asset_payload,
-                    expected_model_name=expected_model_name,
+                    expected_model_names=expected_model_names,
                     require_immutable_path=True,
                 )
                 if model_local_path is None:
@@ -560,6 +567,8 @@ class StandardPredictorService:
                     training_manifest_local_path=manifest_path,
                     training_generated_at_utc=str(payload.get("generated_at_utc")),
                     interval_width=self._resolve_interval_width(asset_payload),
+                    prediction_target_mode=self._resolve_prediction_target_mode(payload),
+                    feature_input_mode=self._resolve_feature_input_mode(payload),
                 )
                 candidate_score = self._score_regression_asset(
                     asset_payload=asset_payload,
@@ -578,7 +587,6 @@ class StandardPredictorService:
         symbol: str,
         extraction_date: date,
     ) -> ModelResolution:
-        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
         manifests_root = (
             self._models_root_dir
             / "manifests"
@@ -601,6 +609,10 @@ class StandardPredictorService:
                     or int(request_payload.get("lookback", self._lookback)) != self._lookback
                 ):
                     continue
+                expected_model_names = self._expected_model_names(
+                    symbol=symbol,
+                    request_payload=request_payload,
+                )
 
                 asset_payload = next(
                     (
@@ -614,7 +626,7 @@ class StandardPredictorService:
                     continue
                 model_local_path = self._resolve_manifest_model_path(
                     asset_payload=asset_payload,
-                    expected_model_name=expected_model_name,
+                    expected_model_names=expected_model_names,
                     require_immutable_path=False,
                 )
                 if model_local_path is None:
@@ -636,7 +648,10 @@ class StandardPredictorService:
                 _, manifest_path, payload, asset_payload = best_candidate
                 model_local_path = self._resolve_manifest_model_path(
                     asset_payload=asset_payload,
-                    expected_model_name=expected_model_name,
+                    expected_model_names=self._expected_model_names(
+                        symbol=symbol,
+                        request_payload=payload.get("request", {}),
+                    ),
                     require_immutable_path=False,
                 )
                 if model_local_path is None:
@@ -654,8 +669,11 @@ class StandardPredictorService:
                     training_manifest_local_path=manifest_path,
                     training_generated_at_utc=str(payload.get("generated_at_utc")),
                     interval_width=interval_width,
+                    prediction_target_mode=self._resolve_prediction_target_mode(payload),
+                    feature_input_mode=self._resolve_feature_input_mode(payload),
                 )
 
+        expected_model_name = f"{self._model_name_prefix}_{symbol.lower()}.keras"
         fallback_path = self._models_root_dir / expected_model_name
         if fallback_path.exists():
             return ModelResolution(
@@ -677,14 +695,17 @@ class StandardPredictorService:
         self,
         *,
         asset_payload: dict[str, Any],
-        expected_model_name: str,
+        expected_model_names: tuple[str, ...],
         require_immutable_path: bool,
     ) -> Path | None:
+        normalized_expected_names = {
+            str(name).lower() for name in expected_model_names if str(name).strip()
+        }
         immutable_recorded_path = self._resolve_recorded_artifact_path(
             asset_payload.get("immutable_model_local_path")
         )
         if (
-            immutable_recorded_path.name.lower() == expected_model_name.lower()
+            immutable_recorded_path.name.lower() in normalized_expected_names
             and immutable_recorded_path.exists()
         ):
             return immutable_recorded_path
@@ -692,15 +713,16 @@ class StandardPredictorService:
         recorded_path = self._resolve_recorded_artifact_path(
             asset_payload.get("model_local_path")
         )
-        if recorded_path.name.lower() != expected_model_name.lower():
+        if recorded_path.name.lower() not in normalized_expected_names:
             return None
 
         history_local_path = self._resolve_recorded_artifact_path(
             asset_payload.get("history_local_path")
         )
-        stable_candidate = history_local_path.parent / expected_model_name
-        if str(history_local_path).strip() and stable_candidate.exists():
-            return stable_candidate.resolve()
+        for expected_model_name in expected_model_names:
+            stable_candidate = history_local_path.parent / expected_model_name
+            if str(history_local_path).strip() and stable_candidate.exists():
+                return stable_candidate.resolve()
 
         if require_immutable_path and self._is_published_alias_path(recorded_path):
             return None
@@ -721,6 +743,30 @@ class StandardPredictorService:
         if not model_path.parts:
             return False
         return model_path.parent == self._models_root_dir
+
+    def _expected_model_names(
+        self,
+        *,
+        symbol: str,
+        request_payload: dict[str, Any],
+    ) -> tuple[str, ...]:
+        prefixes = [self._model_name_prefix]
+        manifest_prefix = str(
+            request_payload.get("model_name_prefix", self._model_name_prefix)
+        ).strip()
+        if manifest_prefix and manifest_prefix not in prefixes:
+            prefixes.append(manifest_prefix)
+        return tuple(f"{prefix}_{symbol.lower()}.keras" for prefix in prefixes)
+
+    @staticmethod
+    def _resolve_prediction_target_mode(payload: dict[str, Any]) -> str:
+        mode = str(payload.get("request", {}).get("prediction_target_mode", "price"))
+        return mode if mode in {"price", "return"} else "price"
+
+    @staticmethod
+    def _resolve_feature_input_mode(payload: dict[str, Any]) -> str:
+        mode = str(payload.get("request", {}).get("feature_input_mode", "sequence_price"))
+        return mode if mode in {"sequence_price", "technical_returns"} else "sequence_price"
 
     def _list_available_extraction_dates(self) -> list[date]:
         manifests_root = self._models_root_dir / "manifests"

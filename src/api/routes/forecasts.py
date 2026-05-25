@@ -11,7 +11,10 @@ from src.api.dependencies import (
     get_metrics_service,
     get_standard_predictor_service,
 )
-from src.api.serving_defaults import resolve_symbol_default_forecast_extraction_date
+from src.api.serving_defaults import (
+    DEFAULT_HORIZON_DAYS,
+    resolve_symbol_default_forecast_extraction_date,
+)
 from src.api.schemas.forecast_response import (
     ForecastItemResponse,
     ForecastModelSummaryResponse,
@@ -37,7 +40,7 @@ def get_forecasts(
     forecast_date_from: date | None = Query(default=None),
     forecast_date_to: date | None = Query(default=None),
     lookback: int = Query(default=60, ge=1),
-    horizon_days: int = Query(default=30, ge=1),
+    horizon_days: int = Query(default=DEFAULT_HORIZON_DAYS, ge=1),
     limit: int | None = Query(default=None, ge=1),
     use_case: GetFuturePredictionsUseCase = Depends(get_future_predictions_use_case),
     predictor_service: StandardPredictorService = Depends(get_standard_predictor_service),

@@ -15,8 +15,8 @@ from src.api.dependencies import (
 from src.api.main import app
 
 
-ALIGNED_EXTRACTION_DATE = date(2026, 4, 22)
-LATEST_TRAINED_EXTRACTION_DATE = date(2026, 4, 26)
+ALIGNED_EXTRACTION_DATE = date(2026, 5, 19)
+LATEST_TRAINED_EXTRACTION_DATE = date(2026, 5, 23)
 SUPPORTED_SYMBOLS = ["AMD", "ASML", "NVDA", "QCOM", "TSM"]
 
 
@@ -152,17 +152,17 @@ class _FakeForecastUseCase:
             lookback=request.lookback or 60,
             horizon_days=request.horizon_days or 30,
             available_predict_types=("normal", "quant"),
-            available_forecast_start_date="2026-04-23",
-            available_forecast_end_date="2026-05-22",
-            returned_forecast_start_date="2026-04-23",
-            returned_forecast_end_date="2026-04-24",
-            last_observed_date="2026-04-22",
-            last_observed_close=208.27,
+            available_forecast_start_date="2026-05-20",
+            available_forecast_end_date="2026-12-31",
+            returned_forecast_start_date="2026-05-20",
+            returned_forecast_end_date="2026-05-21",
+            last_observed_date="2026-05-19",
+            last_observed_close=220.61,
             row_count=2,
             rows=(
                 {
                     "forecast_step": 1,
-                    "forecast_date": "2026-04-23",
+                    "forecast_date": "2026-05-20",
                     "predict_type": "normal",
                     "model_family": "lstm",
                     "model_name": "lstm_nvda",
@@ -177,7 +177,7 @@ class _FakeForecastUseCase:
                 },
                 {
                     "forecast_step": 2,
-                    "forecast_date": "2026-04-24",
+                    "forecast_date": "2026-05-21",
                     "predict_type": "quant",
                     "model_family": "vqc",
                     "model_name": "quantum_vqc_nvda",

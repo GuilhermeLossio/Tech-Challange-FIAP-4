@@ -17,7 +17,7 @@ from src.infrastructure.config.settings import ForecastPipelineSettings
 
 FRONT_TITLE = "Signal Deck"
 DEFAULT_SYMBOL = "NVDA"
-DEFAULT_HORIZON_DAYS = 30
+DEFAULT_HORIZON_DAYS = 162
 SIX_MONTH_TRADING_DAYS = 126
 DEFAULT_CUMULATIVE_RETURN_CAP = 0.35
 

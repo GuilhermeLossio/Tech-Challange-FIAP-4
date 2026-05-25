@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.dependencies import get_future_prediction_service, get_metrics_service
 from src.api.dependencies import get_standard_predictor_service
-from src.api.serving_defaults import resolve_latest_api_extraction_date
+from src.api.serving_defaults import DEFAULT_HORIZON_DAYS, resolve_latest_api_extraction_date
 from src.api.schemas.data_usage_response import DataUsageResponse
 from src.api.schemas.method_response import MethodCatalogItemResponse, MethodCatalogResponse
 from src.application.services.api_metrics_service import ApiMetricsService
@@ -98,7 +98,7 @@ def get_data_usage(
         training_target="Next-day closing price (D+1)",
         target_column="close",
         lookback=60,
-        forecast_horizon_days=30,
+        forecast_horizon_days=DEFAULT_HORIZON_DAYS,
         supported_symbols=registry["supported_symbols"],
         latest_extraction_date=extraction_dates.latest_extraction_date,
         latest_trained_extraction_date=extraction_dates.latest_trained_extraction_date,

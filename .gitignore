@@ -192,6 +192,7 @@ data/processed/**
 !data/processed/.gitkeep
 models/**
 !models/.gitkeep
+!models/serving_promotions.json
 
 # Local OS/editor files
 .DS_Store

@@ -90,7 +90,7 @@ Current implementation status:
 - `POST /predict` is active and serves only approved classical artifacts.
 - `GET /forecasts/{symbol}` is active and serves precomputed `normal` and `quant` rows from parquet.
 - `POST /predict/enriched` and `GET /news/{symbol}` are placeholders and currently return `501 Not Implemented`.
-- Docker, Prometheus, Grafana, and GitHub Actions workflow files are not committed in the current repository snapshot.
+- Docker, Prometheus, Grafana, and test CI workflow files are not committed in the current repository snapshot. A GitHub Pages workflow publishes the static dashboard from `site/`.
 
 Scope summary:
 
@@ -102,6 +102,9 @@ Scope summary:
 | Online serving | Classical LSTM only |
 | Offline forecast serving | `normal` and `quant` materialized rows |
 | Promotion policy | `models/serving_promotions.json` |
+| Current promoted extraction date | `2026-05-19` |
+| Current promoted training run | `20260525T030113Z` |
+| Current forecast package | `data/processed/future_predict`, generated at `20260525T143920Z` |
 
 ---
 
@@ -313,6 +316,7 @@ Training outputs:
 - immutable artifacts under `models/training_runs/...`
 - training manifests under `models/manifests/extraction_date=<date>/trained_at=<timestamp>/keras_training_manifest.json`
 - published convenience aliases under `models/lstm_*.keras`
+- return-target runs use `models/lstm_return_*.keras` and are supported by the current serving policy when explicitly promoted
 
 ### 5. Generate future forecasts
 
@@ -323,7 +327,7 @@ python scripts/generate_forecast.py --skip-s3 --skip-athena
 Output example:
 
 ```text
-data/processed/future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=30/extraction_date=2026-04-22/generated_at=20260427T082426Z/future_predict.parquet
+data/processed/future_predict/source=yfinance/symbol=NVDA/lookback=60/horizon_days=162/extraction_date=2026-05-19/generated_at=20260525T143920Z/future_predict.parquet
 ```
 
 To forecast through a fixed calendar date, let the script derive the business-day horizon:
@@ -332,7 +336,7 @@ To forecast through a fixed calendar date, let the script derive the business-da
 python scripts/generate_forecast.py --forecast-end-date 2026-12-31
 ```
 
-For extraction date `2026-04-26`, this produces `horizon_days=179` from the last observed business date (`2026-04-24`) through `2026-12-31`, publishes the parquet files to S3 when S3 is configured, and repairs the Athena `future_predict` table unless `--skip-athena` is used.
+For extraction date `2026-05-19`, this produces `horizon_days=162` from the next business date (`2026-05-20`) through `2026-12-31`, publishes the parquet files to S3 when S3 is configured, and repairs the Athena `future_predict` table unless `--skip-athena` is used.
 
 ### 6. Compare classical and quantum paths
 
@@ -437,6 +441,22 @@ Rules:
 
 This policy keeps online serving stable even when the latest training run is degraded or only partially materialized.
 
+Current serving alignment:
+
+| Item | Value |
+|---|---|
+| Promoted serving extraction date | `2026-05-19` |
+| Promoted Keras training run | `20260525T030113Z` |
+| Promoted model prefix | `lstm_return` |
+| Materialized forecast package | `data/processed/future_predict` |
+| Forecast generation token | `20260525T143920Z` |
+| Forecast window | `2026-05-20` to `2026-12-31` |
+| Forecast horizon | `162` business days |
+| Forecast predict types | `normal`, `quant` |
+| Symbols | `AMD`, `ASML`, `NVDA`, `QCOM`, `TSM` |
+
+This means `/health`, `/methods`, `/data-usage`, `POST /predict`, and `GET /forecasts/{symbol}` now resolve to the same default `latest_extraction_date=2026-05-19` when local artifacts are available.
+
 ---
 
 ## API
@@ -476,7 +496,7 @@ Supported query parameters:
 - `forecast_date_from=YYYY-MM-DD`
 - `forecast_date_to=YYYY-MM-DD`
 - `lookback=60`
-- `horizon_days=30`
+- `horizon_days=162`
 - `limit=<n>`
 
 When `extraction_date` is omitted, the route uses the same aligned default date advertised by `/health`, `/methods`, and `/data-usage`.
@@ -534,7 +554,7 @@ flake8 src tests scripts
 
 ### CI status
 
-No `.github/workflows/` pipeline is committed in the current repository snapshot. The validated QA flow is local.
+The repository includes `.github/workflows/pages.yml` for GitHub Pages deployment. No test/lint CI pipeline is committed in the current repository snapshot, so the validated QA flow is local.
 
 ---
 
