@@ -103,7 +103,7 @@ Scope summary:
 | Offline forecast serving | `normal` and `quant` materialized rows |
 | Promotion policy | `models/serving_promotions.json` |
 | Current promoted extraction date | `2026-05-19` |
-| Current promoted training run | `20260525T030113Z` |
+| Current promoted training run | `20260525T131034Z` |
 | Current forecast package | `data/processed/future_predict`, generated at `20260525T143920Z` |
 
 ---
@@ -446,7 +446,7 @@ Current serving alignment:
 | Item | Value |
 |---|---|
 | Promoted serving extraction date | `2026-05-19` |
-| Promoted Keras training run | `20260525T030113Z` |
+| Promoted Keras training run | `20260525T131034Z` |
 | Promoted model prefix | `lstm_return` |
 | Materialized forecast package | `data/processed/future_predict` |
 | Forecast generation token | `20260525T143920Z` |
@@ -544,6 +544,24 @@ Current regression coverage includes:
 
 - FastAPI endpoint alignment tests for `/predict`, `/forecasts/{symbol}`, `/health`, `/methods`, and `/data-usage`
 - news deduplication regression tests for timezone-aware and missing timestamps
+
+### Forecast quality audit
+
+The current delivery forecast package (`extraction_date=2026-05-19`, `generated_at=20260525T143920Z`) was audited against the `2026-05-25` raw market-data partition.
+
+Current audit status:
+
+- realized comparison rows are available for the first 3 forecast business days
+- `normal` and `quant` rows no longer report `compared_rows=0`
+- guardrail constraint rate is `0.00%` across the active package
+- the remaining model-quality risk is monotonic recursive shape in the `normal` LSTM path
+- baseline comparison is documented in [Docs/2026-05-25-forecast-quality-realized-audit.md](Docs/2026-05-25-forecast-quality-realized-audit.md)
+
+Run the audit locally with:
+
+```bash
+python scripts/forecast_quality_audit.py --actual-extraction-date 2026-05-25
+```
 
 ### Linting
 

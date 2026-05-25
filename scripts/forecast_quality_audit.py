@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 DEFAULT_SYMBOLS = ("NVDA", "AMD", "TSM", "ASML", "QCOM")
-DEFAULT_GENERATED_AT = "20260523T220812Z"
+DEFAULT_GENERATED_AT = "20260525T143920Z"
 
 
 @dataclass(frozen=True)
@@ -48,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", nargs="+", default=list(DEFAULT_SYMBOLS))
     parser.add_argument("--source", default="yfinance")
     parser.add_argument("--lookback", type=int, default=60)
-    parser.add_argument("--horizon-days", type=int, default=30)
-    parser.add_argument("--extraction-date", default="2026-04-22")
+    parser.add_argument("--horizon-days", type=int, default=162)
+    parser.add_argument("--extraction-date", default="2026-05-19")
     parser.add_argument("--generated-at", default=DEFAULT_GENERATED_AT)
     parser.add_argument("--target-column", default="close")
     parser.add_argument("--raw-root", default="data/raw")
@@ -59,7 +59,8 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help=(
             "Raw extraction date used for actual prices. Use 'auto' to choose "
-            "the first raw partition covering the forecast period."
+            "the best available raw partition, allowing partial realized coverage "
+            "when the full forecast horizon is still in the future."
         ),
     )
     parser.add_argument(
@@ -136,7 +137,7 @@ def load_actual_prices(
 
     needed_start = pd.to_datetime(forecast_dates).min()
     needed_end = pd.to_datetime(forecast_dates).max()
-    fallback: tuple[pd.DataFrame, str | None] | None = None
+    fallback: tuple[int, pd.Timestamp, pd.DataFrame, str | None] | None = None
     for path in candidates:
         if not path.exists():
             continue
@@ -144,12 +145,18 @@ def load_actual_prices(
         frame = frame.loc[:, ["date", target_column]].dropna().copy()
         frame = frame.sort_values("date").reset_index(drop=True)
         partition = path.parent.name.split("=", 1)[-1]
-        if fallback is None:
-            fallback = (frame, partition)
         if frame["date"].min() <= needed_start and frame["date"].max() >= needed_end:
             return frame, partition
+        realized_count = int(
+            ((frame["date"] >= needed_start) & (frame["date"] <= needed_end)).sum()
+        )
+        max_date = pd.Timestamp(frame["date"].max()) if not frame.empty else pd.Timestamp.min
+        fallback_candidate = (realized_count, max_date, frame, partition)
+        if fallback is None or fallback_candidate[:2] > fallback[:2]:
+            fallback = fallback_candidate
     if fallback is not None:
-        return fallback
+        _, _, frame, partition = fallback
+        return frame, partition
     return pd.DataFrame(columns=["date", target_column]), None
 
 
@@ -547,6 +554,31 @@ def write_report(
         baseline_rows[column] = baseline_rows[column].map(lambda value: fmt_number(value))
     baseline_rows["mape"] = baseline_rows["mape"].map(fmt_percent)
 
+    model_rows = aggregate.loc[aggregate["predict_type"].isin(["normal", "quant"])].copy()
+    realized_counts = model_rows["compared_rows"].dropna().astype(int)
+    min_compared_rows = int(realized_counts.min()) if not realized_counts.empty else 0
+    max_compared_rows = int(realized_counts.max()) if not realized_counts.empty else 0
+    max_constraint_rate = (
+        float(model_rows["constraint_rate"].fillna(0.0).max()) if not model_rows.empty else 0.0
+    )
+    normal_monotonic_symbols = sorted(
+        model_rows.loc[
+            (model_rows["predict_type"] == "normal")
+            & (model_rows["monotonic_path"].astype(bool)),
+            "symbol",
+        ].astype(str)
+    )
+    best_rows: list[str] = []
+    comparable = aggregate.loc[aggregate["compared_rows"].fillna(0).astype(int) > 0]
+    for symbol, symbol_rows in comparable.groupby("symbol"):
+        best = symbol_rows.sort_values("mape", ascending=True).iloc[0]
+        best_rows.append(
+            f"- `{symbol}` best short-realized MAPE: `{best['predict_type']}` "
+            f"at `{fmt_percent(best['mape'])}`."
+        )
+    if not best_rows:
+        best_rows.append("- No realized actual rows are available yet for baseline ranking.")
+
     lines = [
         "# Forecast Quality Audit",
         "",
@@ -565,12 +597,34 @@ def write_report(
         "## Main Diagnosis",
         "",
         (
-            "The bad PDF results are mainly explained by LSTM raw outputs that already point "
-            "down before post-processing, recursive error amplification, and guardrails that "
-            "clip some paths into lower cumulative bands. The quantum rows should not be read "
-            "as price regression because they are direction classifications converted through "
-            "a volatility-based price proxy."
+            f"This audit compares the first `{min_compared_rows}` to `{max_compared_rows}` "
+            "realized forecast rows per model because the remaining business days in the "
+            "162-step horizon are still in the future. The previous zero-comparison issue "
+            "is resolved by using the `2026-05-25` raw partition as the actual-price source."
         ),
+        "",
+        (
+            f"Guardrail impact is not material in the current package: the maximum observed "
+            f"constraint rate across `normal` and `quant` rows is `{fmt_percent(max_constraint_rate)}`. "
+            "The remaining quality concern is long-horizon recursive shape: the normal LSTM "
+            "path is monotonic for "
+            + (
+                ", ".join(f"`{symbol}`" for symbol in normal_monotonic_symbols)
+                if normal_monotonic_symbols
+                else "no symbols"
+            )
+            + "."
+        ),
+        "",
+        (
+            "Quantum rows remain direction classifications converted through a volatility-based "
+            "price proxy, so they should be compared as an experimental proxy path rather than "
+            "as direct price regression."
+        ),
+        "",
+        "Short realized-window baseline ranking:",
+        "",
+        *best_rows,
         "",
         "## Forecast vs Actual",
         "",

@@ -17,7 +17,7 @@ The selected promoted training run is:
 | Item | Value |
 |---|---|
 | Extraction date | `2026-05-19` |
-| Trained at | `20260525T030113Z` |
+| Trained at | `20260525T131034Z` |
 | Model prefix | `lstm_return` |
 | Symbols | `AMD`, `ASML`, `NVDA`, `QCOM`, `TSM` |
 | Manifest | `models/manifests/extraction_date=2026-05-19/trained_at=20260525T030113Z/keras_training_manifest.json` |
