@@ -33,6 +33,33 @@
           <div class="brand-sub">Semiconductor Forecast Client View</div>
         </div>
 
+        <nav class="rail-section" aria-label="Dashboard sections">
+          <div class="rail-title">Navigation</div>
+          <a class="rail-nav-item rail-nav-item-active" href="#forecast-console">
+            <span class="rail-nav-dot"></span>
+            Forecast Console
+          </a>
+          <a class="rail-nav-item" href="#forecast-window">
+            <span class="rail-nav-dot"></span>
+            Forecast Window
+          </a>
+          <a class="rail-nav-item" href="#market-context">
+            <span class="rail-nav-dot"></span>
+            Market Context
+          </a>
+          <a class="rail-nav-item" href="#telemetry">
+            <span class="rail-nav-dot"></span>
+            Model Telemetry
+          </a>
+          <a class="rail-nav-item" href="#training-data">
+            <span class="rail-nav-dot"></span>
+            Training Data
+          </a>
+        </nav>
+
+        <div class="rail-divider"></div>
+
+        <section class="rail-section">
         {% if static_export %}
         <div class="filter-panel">
           <div class="filter-title">Static Snapshot</div>
@@ -110,7 +137,11 @@
           </div>
         </form>
         {% endif %}
+        </section>
 
+        <div class="rail-divider"></div>
+
+        <section class="rail-section">
         <div class="read-only-note">
           <div class="pill pill-locked">Read Only</div>
           {% if static_export %}
@@ -119,9 +150,10 @@
           <p>Standard users can filter and inspect predictions and training data, but this interface exposes no mutation or upload action.</p>
           {% endif %}
         </div>
+        </section>
       </aside>
 
-      <main class="canvas">
+      <main class="canvas" id="forecast-console">
         <header class="hero">
           <div>
             <div class="eyebrow">Client View</div>
@@ -148,7 +180,7 @@
         </section>
         {% endif %}
 
-        <section class="metrics-grid">
+        <section class="metrics-grid" aria-label="Overview metrics">
           {% for metric in overview_metrics %}
           <article class="metric-card {% if loop.index0 == 0 %}metric-card-primary{% endif %}">
             <div class="metric-label">{{ metric.label }}</div>
@@ -159,7 +191,7 @@
         </section>
 
         {% if forecast_window_summary %}
-        <section class="panel forecast-window-panel">
+        <section class="panel forecast-window-panel" id="forecast-window">
           <div class="panel-head">
             <div>
               <div class="panel-title">Forecast Window</div>
@@ -221,7 +253,7 @@
         {{ forecast_ui.ExecutiveSummary(forecast_report) }}
         {% endif %}
 
-        <section class="panel">
+        <section class="panel" id="company-snapshot">
           <div class="panel-head">
             <div>
               <div class="panel-title">Company Forecast Snapshot</div>
@@ -320,7 +352,7 @@
           {% endif %}
         </section>
 
-        <section class="panel panel-chart panel-chart-hero">
+        <section class="panel panel-chart panel-chart-hero" id="market-context">
           <div class="panel-head">
             <div>
               <div class="panel-title">Six-Month Market Context</div>
@@ -457,8 +489,8 @@
         </section>
 
         <!-- Forecast telemetry and detail rows -->
-        <section class="panel-grid">
-          <article class="panel" style="grid-column: 1 / -1;">
+        <section class="panel-grid" id="telemetry">
+          <article class="panel panel-telemetry" style="grid-column: 1 / -1;">
             <div class="panel-head">
               <div>
                 <div class="panel-title">Telemetria & Forecast Rows</div>
@@ -577,7 +609,7 @@
           </article>
         </section>
 
-        <section class="panel-grid">
+        <section class="panel-grid" id="methods">
           <article class="panel">
             <div class="panel-head">
               <div>
@@ -631,7 +663,7 @@
           </article>
         </section>
 
-        <section class="panel-grid">
+        <section class="panel-grid" id="training-data">
           <article class="panel panel-chart">
             <div class="panel-head">
               <div>
