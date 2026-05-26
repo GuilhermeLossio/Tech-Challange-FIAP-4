@@ -516,6 +516,7 @@ def markdown_table(frame: pd.DataFrame, columns: list[str]) -> list[str]:
 def write_report(
     *,
     output_path: Path,
+    detailed: pd.DataFrame,
     aggregate: pd.DataFrame,
     scaler_audit: pd.DataFrame,
     generated_files: list[Path],
@@ -579,6 +580,51 @@ def write_report(
     if not best_rows:
         best_rows.append("- No realized actual rows are available yet for baseline ranking.")
 
+    steps_preview = detailed.loc[
+        detailed["actual_close"].notna()
+        & detailed["predict_type"].isin(["normal", "quant"]),
+        [
+            "symbol",
+            "predict_type",
+            "forecast_step",
+            "forecast_date",
+            "predicted_close",
+            "actual_close",
+            "error",
+            "ape",
+            "prediction_constraint_applied",
+            "is_price_proxy",
+        ],
+    ].copy()
+    for column in ["predicted_close", "actual_close", "error"]:
+        steps_preview[column] = steps_preview[column].map(lambda value: fmt_number(value))
+    steps_preview["ape"] = steps_preview["ape"].map(fmt_percent)
+    steps_preview["forecast_date"] = pd.to_datetime(
+        steps_preview["forecast_date"]
+    ).dt.strftime("%Y-%m-%d")
+
+    summary_preview = aggregate.copy()
+    for column in ["mae", "rmse", "final_predicted_close", "final_actual_close"]:
+        if column in summary_preview:
+            summary_preview[column] = summary_preview[column].map(
+                lambda value: fmt_number(value)
+            )
+    for column in [
+        "mape",
+        "predicted_horizon_return",
+        "actual_horizon_return",
+        "constraint_rate",
+        "lower_band_rate",
+        "up_rate",
+    ]:
+        if column in summary_preview:
+            summary_preview[column] = summary_preview[column].map(fmt_percent)
+
+    scaler_preview = scaler_audit.copy()
+    for column in ["scaler_fit_matches_train_end", "scaler_before_validation", "scaler_before_test"]:
+        if column in scaler_preview:
+            scaler_preview[column] = scaler_preview[column].map(str)
+
     lines = [
         "# Forecast Quality Audit",
         "",
@@ -633,12 +679,53 @@ def write_report(
     lines.extend(["", "## Baseline Comparison", ""])
     lines.extend(markdown_table(baseline_rows, list(baseline_rows.columns)))
     lines.extend(["", "## Scaler and Split Audit", ""])
-    scaler_report = scaler_audit.copy()
-    bool_columns = ["scaler_fit_matches_train_end", "scaler_before_validation", "scaler_before_test"]
-    for column in bool_columns:
-        if column in scaler_report:
-            scaler_report[column] = scaler_report[column].map(str)
-    lines.extend(markdown_table(scaler_report, list(scaler_report.columns)))
+    lines.extend(markdown_table(scaler_preview, list(scaler_preview.columns)))
+    lines.extend(
+        [
+            "",
+            "## Generated File Previews",
+            "",
+            "### `forecast_quality_steps.csv`",
+            "",
+            "Preview of realized `normal` and `quant` rows with actual-price comparison:",
+            "",
+        ]
+    )
+    lines.extend(markdown_table(steps_preview, list(steps_preview.columns)))
+    lines.extend(
+        [
+            "",
+            "### `forecast_quality_summary.csv`",
+            "",
+        ]
+    )
+    lines.extend(markdown_table(summary_preview, list(summary_preview.columns)))
+    lines.extend(
+        [
+            "",
+            "### `forecast_quality_scaler_split_audit.csv`",
+            "",
+        ]
+    )
+    lines.extend(markdown_table(scaler_preview, list(scaler_preview.columns)))
+    lines.extend(["", "### Forecast Quality Charts", ""])
+    for selection in selections:
+        chart_name = f"{selection.symbol.lower()}_forecast_quality.svg"
+        lines.extend(
+            [
+                f"#### `{chart_name}`",
+                "",
+                f"![{selection.symbol} forecast quality]({chart_name})",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "### `forecast_quality_report.md`",
+            "",
+            "This Markdown file is the rendered preview report for the generated audit outputs.",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -740,6 +827,7 @@ def main() -> int:
     report_path = output_dir / "forecast_quality_report.md"
     write_report(
         output_path=report_path,
+        detailed=detailed,
         aggregate=aggregate,
         scaler_audit=scaler_audit,
         generated_files=generated_files + [report_path],
