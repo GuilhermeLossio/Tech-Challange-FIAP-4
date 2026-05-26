@@ -4,12 +4,13 @@
 
 > **Implementation status notice**
 > This document describes both the current implementation and the planned roadmap.
-> Sections marked `[NEW]` — including the News Intelligence Layer, FinBERT sentiment
-> pipeline, feature fusion, and enriched prediction endpoints — represent the next
-> delivery stage and are **not yet active in production**. The currently deployed API
-> and its active endpoints are described in the [README](README.md).
-> The CI/CD pipeline documented here reflects the target design; no `.github/workflows/`
-> is committed in the current snapshot.
+> Sections marked `[NEW]` — including the live News Intelligence Layer, FinBERT sentiment
+> pipeline, and feature-fusion model inference — represent the next delivery stage and
+> are **not yet active in production**. `POST /predict/enriched` and `GET /news/{symbol}`
+> are active only as offline fallback endpoints in the current snapshot. The currently
+> deployed API and its active endpoints are described in the [README](README.md).
+> The repository includes CI for compile/lint/test checks and a separate GitHub Pages
+> deployment workflow.
 
 ---
 
@@ -191,22 +192,22 @@ The currently delivered baseline API exposes:
 - `GET /data-usage`
 - `GET /metrics`
 
-The enriched and news routes remain reserved for a later delivery stage and should not be treated as production-ready.
+The enriched and news routes are active as offline fallback endpoints. They should not be treated as production live-news or FinBERT inference paths.
 
 ```
 src/api/
 ├── main.py                          # FastAPI app factory
 ├── routes/
 │   ├── predict.py                   # POST /predict
-│   ├── predict_enriched.py          # POST /predict/enriched  [NEW]
-│   ├── news.py                      # GET  /news/{symbol}     [NEW]
+│   ├── predict_enriched.py          # POST /predict/enriched fallback
+│   ├── news.py                      # GET  /news/{symbol} fallback
 │   ├── health.py                    # GET  /health
 │   └── metrics.py                   # GET  /metrics
 └── schemas/
     ├── predict_request.py
     ├── predict_response.py
     ├── enriched_predict_request.py   # [NEW]
-    └── news_response.py              # [NEW]
+    └── news_response.py
 ```
 
 ---
@@ -818,7 +819,7 @@ enriched_predictor_service = build_enriched_predictor_service()
 
 ## CI/CD Pipeline
 
-> **Current status:** This section describes the intended CI/CD blueprint. No `.github/workflows/` pipeline is committed in the current repository snapshot; the validated quality flow is local and documented in the README.
+> **Current status:** The repository now includes `.github/workflows/ci.yml` for compile/lint/test checks and `.github/workflows/pages.yml` for static dashboard deployment. The broader deployment stages below remain the target blueprint.
 
 ```
 push / pull_request

@@ -5,6 +5,7 @@ from functools import lru_cache
 from src.application.services.api_metrics_service import ApiMetricsService
 from src.application.services.future_prediction_service import FuturePredictionService
 from src.application.services.predictor_service import StandardPredictorService
+from src.application.services.sentiment_analysis_service import KeywordSentimentAnalyzer
 from src.application.use_cases.get_future_predictions import GetFuturePredictionsUseCase
 from src.application.use_cases.predict_closing_price import PredictClosingPriceUseCase
 from src.infrastructure.config.settings import ForecastPipelineSettings
@@ -40,6 +41,11 @@ def get_future_prediction_service() -> FuturePredictionService:
     return FuturePredictionService(
         processed_root_dir=settings.local_processed_dir,
     )
+
+
+@lru_cache(maxsize=1)
+def get_sentiment_analyzer() -> KeywordSentimentAnalyzer:
+    return KeywordSentimentAnalyzer()
 
 
 @lru_cache(maxsize=1)

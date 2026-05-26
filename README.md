@@ -89,8 +89,8 @@ Current implementation status:
 
 - `POST /predict` is active and serves only approved classical artifacts.
 - `GET /forecasts/{symbol}` is active and serves precomputed `normal` and `quant` rows from parquet.
-- `POST /predict/enriched` and `GET /news/{symbol}` are placeholders and currently return `501 Not Implemented`.
-- Docker, Prometheus, Grafana, and test CI workflow files are not committed in the current repository snapshot. A GitHub Pages workflow publishes the static dashboard from `site/`.
+- `POST /predict/enriched` and `GET /news/{symbol}` are active as offline fallback endpoints. They do not fetch live news or run FinBERT in the current snapshot.
+- Docker, Prometheus, and Grafana assets are not committed in the current repository snapshot. GitHub Actions workflows publish the static dashboard and run CI checks.
 
 Scope summary:
 
@@ -267,7 +267,7 @@ ATHENA_OUTPUT_S3_URI=
 
 Notes:
 
-- News API credentials are optional because the news endpoints are not active yet.
+- News API credentials are optional because live news adapters are roadmap-only in this snapshot. The active news endpoints use a local keyword sentiment fallback.
 - The API never triggers live IBM Quantum inference at request time.
 - `requirements.txt` contains runtime dependencies only; `requirements-dev.txt` adds `pytest`, `pytest-cov`, `httpx`, `black`, `flake8`, and `pre-commit`.
 
@@ -503,11 +503,23 @@ When `extraction_date` is omitted, the route uses the same aligned default date 
 
 ### `POST /predict/enriched`
 
-Returns `501 Not Implemented` in the current version.
+Runs the standard approved classical prediction and attaches optional local keyword sentiment analysis.
+
+Request fields match `POST /predict` and add:
+
+- `news_headlines`: optional list of up to 20 headlines
+
+When no headlines are supplied, the endpoint returns the standard classical prediction with neutral sentiment and `enrichment_applied=false`. Live news retrieval, FinBERT, and true feature-fusion inference remain roadmap items.
 
 ### `GET /news/{symbol}`
 
-Returns `501 Not Implemented` in the current version.
+Returns a structured offline fallback news response with neutral sentiment, no live signals, and `live_news_enabled=false`.
+
+Supported query parameters:
+
+- `target_date=YYYY-MM-DD`
+
+Live Reuters/NewsAPI/Alpha Vantage adapters are not configured in this repository snapshot.
 
 ### `GET /methods`
 
@@ -543,6 +555,7 @@ pytest tests -q
 Current regression coverage includes:
 
 - FastAPI endpoint alignment tests for `/predict`, `/forecasts/{symbol}`, `/health`, `/methods`, and `/data-usage`
+- offline fallback tests for `/predict/enriched` and `/news/{symbol}`
 - news deduplication regression tests for timezone-aware and missing timestamps
 
 ### Forecast quality audit
@@ -572,7 +585,10 @@ flake8 src tests scripts
 
 ### CI status
 
-The repository includes `.github/workflows/pages.yml` for GitHub Pages deployment. No test/lint CI pipeline is committed in the current repository snapshot, so the validated QA flow is local.
+The repository includes:
+
+- `.github/workflows/ci.yml` for Python compile checks, fatal-error flake8 linting, and `pytest`
+- `.github/workflows/pages.yml` for GitHub Pages deployment
 
 ---
 

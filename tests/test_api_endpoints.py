@@ -310,3 +310,47 @@ def test_forecasts_with_explicit_unavailable_date_return_not_found(
 
     assert response.status_code == 404
     assert "Materialized future predictions were not found" in response.json()["detail"]
+
+
+def test_news_endpoint_returns_offline_fallback(
+    client_with_overrides: tuple[TestClient, _FakePredictUseCase, _FakeForecastUseCase],
+) -> None:
+    client, _, _ = client_with_overrides
+
+    response = client.get("/news/NVDA", params={"target_date": "2026-05-19"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "NVDA"
+    assert payload["target_date"] == "2026-05-19"
+    assert payload["live_news_enabled"] is False
+    assert payload["sentiment_label"] == "neutral"
+    assert payload["signals"] == []
+
+
+def test_predict_enriched_uses_keyword_sentiment_fallback(
+    client_with_overrides: tuple[TestClient, _FakePredictUseCase, _FakeForecastUseCase],
+) -> None:
+    client, predict_use_case, _ = client_with_overrides
+
+    response = client.post(
+        "/predict/enriched",
+        json={
+            "symbol": "NVDA",
+            "prices": [208.27] * 60,
+            "news_headlines": [
+                "NVDA beats guidance on strong AI demand",
+                "Analysts raise outlook after record data center growth",
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "NVDA"
+    assert payload["extraction_date"] == ALIGNED_EXTRACTION_DATE.isoformat()
+    assert payload["predict_type"] == "enriched_fallback"
+    assert payload["sentiment_label"] == "positive"
+    assert payload["sentiment_headline_count"] == 2
+    assert payload["enrichment_applied"] is True
+    assert predict_use_case.requests[-1].symbol == "NVDA"
