@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Tech Challenge
+    orgId: 1
+    folder: Tech Challenge
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

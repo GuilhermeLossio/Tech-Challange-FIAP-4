@@ -68,6 +68,8 @@ class KerasTrainingRequest:
     model_name_prefix: str = "lstm"
     prediction_target_mode: str = "price"
     feature_input_mode: str = "sequence_price"
+    cross_validation_folds: int = 0
+    cross_validation_min_train_size: int = 0
     l2_reg: float = 1e-4               # ← novo: regularização L2 nas camadas Dense
     clip_norm: float = 1.0             # ← novo: gradient clipping para estabilidade
 
@@ -81,6 +83,34 @@ class SplitMetrics:
     rmse: float | None
     mape: float | None
     direction_accuracy: float | None
+
+
+@dataclass(frozen=True)
+class CrossValidationFoldMetrics:
+    fold: int
+    train_count: int
+    validation_count: int
+    train_start: str | None
+    train_end: str | None
+    validation_start: str | None
+    validation_end: str | None
+    epochs_ran: int
+    best_epoch: int
+    validation_metrics: SplitMetrics
+
+
+@dataclass(frozen=True)
+class CrossValidationSummary:
+    enabled: bool
+    fold_count: int
+    requested_folds: int
+    min_train_size: int
+    validation_window_size: int
+    mean_validation_mae: float | None
+    mean_validation_rmse: float | None
+    mean_validation_mape: float | None
+    mean_validation_direction_accuracy: float | None
+    folds: tuple[CrossValidationFoldMetrics, ...]
 
 
 @dataclass(frozen=True)
@@ -104,6 +134,7 @@ class KerasModelArtifact:
     report_local_path: str
     loss_chart_local_path: str
     metrics_chart_local_path: str
+    cross_validation_local_path: str | None
     model_s3_uri: str | None
     history_s3_uri: str | None
     report_s3_uri: str | None
@@ -112,6 +143,7 @@ class KerasModelArtifact:
     train_metrics: SplitMetrics
     validation_metrics: SplitMetrics
     test_metrics: SplitMetrics
+    cross_validation_summary: CrossValidationSummary
 
 
 @dataclass(frozen=True)
@@ -308,6 +340,26 @@ class KerasTrainingService:
                 scaler_metadata=scaler_metadata,
                 prediction_target_mode=request.prediction_target_mode,
             )
+            cross_validation_summary = self._run_time_series_cross_validation(
+                request=request,
+                dataset=dataset,
+                scaler_metadata=scaler_metadata,
+                symbol=symbol,
+            )
+            cross_validation_path = None
+            if cross_validation_summary.enabled:
+                cross_validation_relative_path = self._build_run_artifact_relative_path(
+                    source=request.source,
+                    symbol=symbol,
+                    lookback=request.lookback,
+                    extraction_date=request.extraction_date,
+                    trained_at_token=trained_at_token,
+                    filename="cross_validation.json",
+                )
+                cross_validation_path = self._local_store.write_json(
+                    asdict(cross_validation_summary),
+                    cross_validation_relative_path,
+                )
             loss_chart_relative_path = self._build_run_artifact_relative_path(
                 source=request.source,
                 symbol=symbol,
@@ -347,6 +399,8 @@ class KerasTrainingService:
                 train_metrics=train_metrics,
                 validation_metrics=validation_metrics,
                 test_metrics=test_metrics,
+                cross_validation_summary=cross_validation_summary,
+                cross_validation_path=cross_validation_path,
             )
             metrics_chart_s3_uri = None
             if self._s3_store is not None:
@@ -408,6 +462,9 @@ class KerasTrainingService:
                     report_local_path=str(report_path),
                     loss_chart_local_path=str(loss_chart_path),
                     metrics_chart_local_path=str(metrics_chart_path),
+                    cross_validation_local_path=(
+                        str(cross_validation_path) if cross_validation_path is not None else None
+                    ),
                     model_s3_uri=model_s3_uri,
                     history_s3_uri=history_s3_uri,
                     report_s3_uri=report_s3_uri,
@@ -416,6 +473,7 @@ class KerasTrainingService:
                     train_metrics=train_metrics,
                     validation_metrics=validation_metrics,
                     test_metrics=test_metrics,
+                    cross_validation_summary=cross_validation_summary,
                 )
             )
 
@@ -439,6 +497,10 @@ class KerasTrainingService:
                 "feature_input_mode": request.feature_input_mode,
                 "l2_reg": request.l2_reg,
                 "clip_norm": request.clip_norm,
+                "cross_validation_folds": request.cross_validation_folds,
+                "cross_validation_min_train_size": (
+                    request.cross_validation_min_train_size
+                ),
             },
             "asset_count": len(artifacts),
             "assets": [asdict(artifact) for artifact in artifacts],
@@ -511,6 +573,12 @@ class KerasTrainingService:
             raise ValueError("l2_reg must be non-negative.")
         if request.clip_norm <= 0:
             raise ValueError("clip_norm must be greater than zero.")
+        if request.cross_validation_folds < 0:
+            raise ValueError("cross_validation_folds must be non-negative.")
+        if request.cross_validation_folds == 1:
+            raise ValueError("cross_validation_folds must be 0 or at least 2.")
+        if request.cross_validation_min_train_size < 0:
+            raise ValueError("cross_validation_min_train_size must be non-negative.")
 
     def _load_training_frame(
         self,
@@ -614,6 +682,7 @@ class KerasTrainingService:
         train_mask = (split == "train").to_numpy()
         validation_mask = (split == "validation").to_numpy()
         test_mask = (split == "test").to_numpy()
+        fit_mask = train_mask | validation_mask
 
         if not train_mask.any():
             raise ValueError("Refined dataset does not contain any train rows.")
@@ -622,6 +691,21 @@ class KerasTrainingService:
 
         return {
             "row_count": int(len(ordered.index)),
+            "target_dates": (
+                ordered["target_date"].dt.strftime("%Y-%m-%d").to_numpy()
+                if "target_date" in ordered.columns
+                else np.array([None] * len(ordered.index), dtype=object)
+            ),
+            "fit_mask": fit_mask,
+            "X_fit_model": self._slice_model_inputs(X_model, fit_mask),
+            "y_fit_scaled": y_scaled[fit_mask],
+            "y_fit_raw": y_raw[fit_mask],
+            "current_fit_raw": current_raw[fit_mask],
+            "fit_target_dates": (
+                ordered.loc[fit_mask, "target_date"].dt.strftime("%Y-%m-%d").to_numpy()
+                if "target_date" in ordered.columns
+                else np.array([None] * int(fit_mask.sum()), dtype=object)
+            ),
             "X_train": X_price[train_mask],
             "X_train_model": self._slice_model_inputs(X_model, train_mask),
             "y_train_scaled": y_scaled[train_mask],
@@ -847,6 +931,7 @@ class KerasTrainingService:
                 mae=None,
                 rmse=None,
                 mape=None,
+                direction_accuracy=None,
             )
 
         evaluation = model.evaluate(X, y_scaled, verbose=0)
@@ -892,6 +977,221 @@ class KerasTrainingService:
             direction_accuracy=direction_accuracy,
         )
 
+    def _run_time_series_cross_validation(
+        self,
+        *,
+        request: KerasTrainingRequest,
+        dataset: dict[str, Any],
+        scaler_metadata: dict[str, float],
+        symbol: str,
+    ) -> CrossValidationSummary:
+        if request.cross_validation_folds == 0:
+            return self._empty_cross_validation_summary(request)
+
+        slices = self._build_time_series_cv_slices(
+            sample_count=len(dataset["y_fit_scaled"]),
+            requested_folds=request.cross_validation_folds,
+            min_train_size=request.cross_validation_min_train_size,
+        )
+        folds: list[CrossValidationFoldMetrics] = []
+        target_dates = list(dataset["fit_target_dates"])
+        should_shuffle = request.prediction_target_mode == "return"
+
+        for fold_number, train_slice, validation_slice in slices:
+            tf.keras.backend.clear_session()
+            self._set_random_seed(request.seed + fold_number)
+            fold_model = self._build_model(
+                sequence_input_shape=dataset["sequence_input_shape"],
+                engineered_feature_count=dataset["engineered_feature_count"],
+                learning_rate=request.learning_rate,
+                feature_input_mode=request.feature_input_mode,
+                l2_reg=request.l2_reg,
+                clip_norm=request.clip_norm,
+            )
+            callbacks = [
+                EarlyStopping(
+                    monitor="val_loss",
+                    patience=request.patience,
+                    restore_best_weights=True,
+                    min_delta=1e-6,
+                ),
+                ReduceLROnPlateau(
+                    monitor="val_loss",
+                    factor=0.5,
+                    patience=7,
+                    min_lr=1e-6,
+                    verbose=0,
+                ),
+            ]
+            history = fold_model.fit(
+                x=self._slice_model_inputs_by_slice(
+                    dataset["X_fit_model"],
+                    train_slice,
+                ),
+                y=dataset["y_fit_scaled"][train_slice],
+                validation_data=(
+                    self._slice_model_inputs_by_slice(
+                        dataset["X_fit_model"],
+                        validation_slice,
+                    ),
+                    dataset["y_fit_scaled"][validation_slice],
+                ),
+                epochs=request.epochs,
+                batch_size=request.batch_size,
+                callbacks=callbacks,
+                verbose=request.verbose,
+                shuffle=should_shuffle,
+            )
+            history_payload = self._build_history_payload(
+                history=history.history,
+                monitor_metric="val_loss",
+            )
+            validation_metrics = self._evaluate_split(
+                model=fold_model,
+                X=self._slice_model_inputs_by_slice(
+                    dataset["X_fit_model"],
+                    validation_slice,
+                ),
+                y_scaled=dataset["y_fit_scaled"][validation_slice],
+                y_raw=dataset["y_fit_raw"][validation_slice],
+                current_raw=dataset["current_fit_raw"][validation_slice],
+                scaler_metadata=scaler_metadata,
+                prediction_target_mode=request.prediction_target_mode,
+            )
+            folds.append(
+                CrossValidationFoldMetrics(
+                    fold=fold_number,
+                    train_count=int(train_slice.stop - train_slice.start),
+                    validation_count=int(validation_slice.stop - validation_slice.start),
+                    train_start=self._date_at(target_dates, train_slice.start),
+                    train_end=self._date_at(target_dates, train_slice.stop - 1),
+                    validation_start=self._date_at(target_dates, validation_slice.start),
+                    validation_end=self._date_at(target_dates, validation_slice.stop - 1),
+                    epochs_ran=history_payload["epochs_ran"],
+                    best_epoch=history_payload["best_epoch"],
+                    validation_metrics=validation_metrics,
+                )
+            )
+            print(
+                f"{symbol.upper()} CV fold {fold_number}/{len(slices)}: "
+                f"val_mae={validation_metrics.mae!r}, "
+                f"val_rmse={validation_metrics.rmse!r}"
+            )
+
+        return CrossValidationSummary(
+            enabled=True,
+            fold_count=len(folds),
+            requested_folds=request.cross_validation_folds,
+            min_train_size=slices[0][1].stop if slices else 0,
+            validation_window_size=(
+                slices[0][2].stop - slices[0][2].start if slices else 0
+            ),
+            mean_validation_mae=self._mean_metric(folds, "mae"),
+            mean_validation_rmse=self._mean_metric(folds, "rmse"),
+            mean_validation_mape=self._mean_metric(folds, "mape"),
+            mean_validation_direction_accuracy=self._mean_metric(
+                folds,
+                "direction_accuracy",
+            ),
+            folds=tuple(folds),
+        )
+
+    @staticmethod
+    def _empty_cross_validation_summary(
+        request: KerasTrainingRequest,
+    ) -> CrossValidationSummary:
+        return CrossValidationSummary(
+            enabled=False,
+            fold_count=0,
+            requested_folds=request.cross_validation_folds,
+            min_train_size=request.cross_validation_min_train_size,
+            validation_window_size=0,
+            mean_validation_mae=None,
+            mean_validation_rmse=None,
+            mean_validation_mape=None,
+            mean_validation_direction_accuracy=None,
+            folds=(),
+        )
+
+    @staticmethod
+    def _build_time_series_cv_slices(
+        *,
+        sample_count: int,
+        requested_folds: int,
+        min_train_size: int,
+    ) -> list[tuple[int, slice, slice]]:
+        if requested_folds < 2:
+            raise ValueError("cross_validation_folds must be 0 or at least 2.")
+        if sample_count <= requested_folds:
+            raise ValueError(
+                "Not enough train+validation rows to build temporal cross-validation "
+                f"folds: sample_count={sample_count}, folds={requested_folds}."
+            )
+        resolved_min_train_size = (
+            min_train_size
+            if min_train_size > 0
+            else max(1, sample_count // (requested_folds + 1))
+        )
+        remaining = sample_count - resolved_min_train_size
+        if remaining < requested_folds:
+            raise ValueError(
+                "cross_validation_min_train_size leaves too few rows for the "
+                f"requested folds: sample_count={sample_count}, "
+                f"min_train_size={resolved_min_train_size}, folds={requested_folds}."
+            )
+        validation_window_size = remaining // requested_folds
+        if validation_window_size <= 0:
+            raise ValueError("Cross-validation validation window would be empty.")
+
+        slices: list[tuple[int, slice, slice]] = []
+        for fold_index in range(requested_folds):
+            validation_start = resolved_min_train_size + fold_index * validation_window_size
+            validation_end = (
+                sample_count
+                if fold_index == requested_folds - 1
+                else validation_start + validation_window_size
+            )
+            if validation_start >= validation_end:
+                continue
+            slices.append(
+                (
+                    fold_index + 1,
+                    slice(0, validation_start),
+                    slice(validation_start, validation_end),
+                )
+            )
+        return slices
+
+    @staticmethod
+    def _slice_model_inputs_by_slice(X_model: Any, index_slice: slice) -> Any:
+        if isinstance(X_model, list):
+            return [part[index_slice] for part in X_model]
+        return X_model[index_slice]
+
+    @staticmethod
+    def _date_at(values: list[Any], index: int) -> str | None:
+        if index < 0 or index >= len(values):
+            return None
+        value = values[index]
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        return str(value)
+
+    @staticmethod
+    def _mean_metric(
+        folds: list[CrossValidationFoldMetrics],
+        metric_name: str,
+    ) -> float | None:
+        values = [
+            float(value)
+            for fold in folds
+            for value in [getattr(fold.validation_metrics, metric_name)]
+            if value is not None and np.isfinite(value)
+        ]
+        if not values:
+            return None
+        return float(np.mean(values))
+
     def _write_training_report(
         self,
         *,
@@ -909,6 +1209,8 @@ class KerasTrainingService:
         train_metrics: SplitMetrics,
         validation_metrics: SplitMetrics,
         test_metrics: SplitMetrics,
+        cross_validation_summary: CrossValidationSummary,
+        cross_validation_path: Path | None,
     ) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         rows = "\n".join(
@@ -918,6 +1220,10 @@ class KerasTrainingService:
                 ("Validation", validation_metrics),
                 ("Test", test_metrics),
             )
+        )
+        cv_section = self._format_cross_validation_report_section(
+            cross_validation_summary,
+            cross_validation_path,
         )
         content = f"""# Relatorio de Treinamento - {symbol.upper()}
 
@@ -945,6 +1251,8 @@ class KerasTrainingService:
 | Sequence length | `{dataset["sequence_length"]}` |
 | Engineered feature count | `{dataset["engineered_feature_count"]}` |
 | Shuffle no treino | `{"sim (modo retorno)" if request.prediction_target_mode == "return" else "nao (modo preco)"}` |
+| Validacao cruzada temporal | `{"sim" if cross_validation_summary.enabled else "nao"}` |
+| Folds solicitados | `{request.cross_validation_folds}` |
 
 ## Dataset
 
@@ -960,6 +1268,8 @@ class KerasTrainingService:
 | Split | Samples | Loss MSE | MAE scaled | MAE | RMSE | MAPE % | Dir Acc % |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 {rows}
+
+{cv_section}
 
 ## Graficos
 
@@ -983,8 +1293,60 @@ class KerasTrainingService:
 - Grandes diferencas entre validacao e teste indicam generalizacao temporal fraca, nao evidencia pronta para producao.
 - O ReduceLROnPlateau reduz o learning rate automaticamente quando val_loss estagna, permitindo convergencia mais fina sem treinar manualmente com LR menor.
 - Shuffle ativado para modo retorno: retornos diarios tem baixa autocorrelacao, e a ordem temporal nao e essencial para o sinal; o shuffle reduz vies de sequencia.
+- A validacao cruzada temporal, quando ativada, usa apenas train+validation em janelas expansivas e preserva o split test como holdout final.
 """
         destination.write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _format_cross_validation_report_section(
+        summary: CrossValidationSummary,
+        cross_validation_path: Path | None,
+    ) -> str:
+        if not summary.enabled:
+            return "## Validacao Cruzada Temporal\n\nNao executada nesta rodada.\n"
+
+        rows = "\n".join(
+            "| {fold} | {train_count} | {validation_count} | {train_start} -> {train_end} | "
+            "{validation_start} -> {validation_end} | {mae} | {rmse} | {mape} | {dir_acc} |".format(
+                fold=fold.fold,
+                train_count=fold.train_count,
+                validation_count=fold.validation_count,
+                train_start=fold.train_start or "n/a",
+                train_end=fold.train_end or "n/a",
+                validation_start=fold.validation_start or "n/a",
+                validation_end=fold.validation_end or "n/a",
+                mae=KerasTrainingService._format_optional_float(
+                    fold.validation_metrics.mae,
+                ),
+                rmse=KerasTrainingService._format_optional_float(
+                    fold.validation_metrics.rmse,
+                ),
+                mape=KerasTrainingService._format_optional_float(
+                    fold.validation_metrics.mape,
+                ),
+                dir_acc=KerasTrainingService._format_optional_float(
+                    fold.validation_metrics.direction_accuracy,
+                ),
+            )
+            for fold in summary.folds
+        )
+        return f"""## Validacao Cruzada Temporal
+
+| Campo | Valor |
+| --- | --- |
+| Folds executados | `{summary.fold_count}` |
+| Janela minima de treino | `{summary.min_train_size}` |
+| Janela de validacao | `{summary.validation_window_size}` |
+| MAE medio validacao | `{KerasTrainingService._format_optional_float(summary.mean_validation_mae)}` |
+| RMSE medio validacao | `{KerasTrainingService._format_optional_float(summary.mean_validation_rmse)}` |
+| MAPE medio validacao | `{KerasTrainingService._format_optional_float(summary.mean_validation_mape)}` |
+| Dir Acc media validacao | `{KerasTrainingService._format_optional_float(summary.mean_validation_direction_accuracy)}` |
+| JSON | `{cross_validation_path}` |
+
+| Fold | Train | Validation | Train dates | Validation dates | MAE | RMSE | MAPE % | Dir Acc % |
+| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |
+{rows}
+"""
 
     @staticmethod
     def _format_regression_metric_row(name: str, metrics: SplitMetrics) -> str:

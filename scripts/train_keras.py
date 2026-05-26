@@ -119,6 +119,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--cross-validation-folds",
+        type=int,
+        default=0,
+        help=(
+            "Run expanding-window temporal cross-validation over train+validation "
+            "before writing the manifest. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--cross-validation-min-train-size",
+        type=int,
+        default=0,
+        help=(
+            "Minimum number of train+validation rows used by the first CV fold. "
+            "Defaults to an automatic expanding-window size."
+        ),
+    )
+    parser.add_argument(
         "--skip-s3",
         action="store_true",
         help="Only persist training artifacts locally and skip S3 upload.",
@@ -213,6 +231,8 @@ def main() -> int:
         model_name_prefix=args.model_name_prefix,
         prediction_target_mode=args.prediction_target_mode,
         feature_input_mode=args.feature_input_mode,
+        cross_validation_folds=args.cross_validation_folds,
+        cross_validation_min_train_size=args.cross_validation_min_train_size,
     )
     try:
         result = service.train(request)
@@ -236,6 +256,8 @@ def main() -> int:
         )
         print(f"  history: {asset.history_local_path}")
         print(f"  report: {asset.report_local_path}")
+        if asset.cross_validation_local_path:
+            print(f"  cross validation: {asset.cross_validation_local_path}")
         print(f"  loss chart: {asset.loss_chart_local_path}")
         print(f"  metrics chart: {asset.metrics_chart_local_path}")
         if asset.model_s3_uri:

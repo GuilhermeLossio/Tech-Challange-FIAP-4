@@ -4,9 +4,9 @@
 ## Semiconductor Equities · LSTM + Qiskit + FastAPI
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)](https://tensorflow.org)
+[![TensorFlow](https://img.shields.io/badge/TensorFlow-2.16--2.17-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)](https://tensorflow.org)
 [![Qiskit](https://img.shields.io/badge/Qiskit-IBM%20Quantum-6929C4?style=flat-square&logo=ibm&logoColor=white)](https://qiskit.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 Production-grade forecasting pipeline for semiconductor stocks — classical Keras LSTM baseline
@@ -46,7 +46,7 @@ Each diagram highlights one discussion topic for project walkthroughs.
 
 | Topic | Diagram |
 |---|---|
-| Current architecture vs `[NEW]` roadmap | ![Clean architecture layers](Docs/graphs/clean_architecture_layers.svg) |
+| Current implemented architecture | ![Clean architecture layers](Docs/graphs/clean_architecture_layers.svg) |
 | Semiconductor market rationale | ![Semiconductor supply chain](Docs/graphs/semiconductor_supply_chain.svg) |
 | Classical production path vs offline quantum comparison | ![Hybrid classical-quantum pipeline](Docs/graphs/hybrid_classical_quantum_pipeline.svg) |
 | VQC circuit architecture used in the benchmark | ![Quantum VQC circuit architecture](Docs/graphs/quantum_vqc_circuit_architecture.svg) |
@@ -70,7 +70,7 @@ Each diagram highlights one discussion topic for project walkthroughs.
 | [Promotion Policy](#promotion-policy) | Serving approval rules for classical models |
 | [API](#api) | Current FastAPI endpoints and behavior |
 | [Quality](#quality) | Tests, linting, and current CI status |
-| [Deployment](#deployment) | What is and is not committed today |
+| [Deployment](#deployment) | Local container and monitoring setup |
 | [Author](#author) | Project author |
 
 ---
@@ -90,7 +90,7 @@ Current implementation status:
 - `POST /predict` is active and serves only approved classical artifacts.
 - `GET /forecasts/{symbol}` is active and serves precomputed `normal` and `quant` rows from parquet.
 - `POST /predict/enriched` and `GET /news/{symbol}` are active as offline fallback endpoints. They do not fetch live news or run FinBERT in the current snapshot.
-- Docker, Prometheus, and Grafana assets are not committed in the current repository snapshot. GitHub Actions workflows publish the static dashboard and run CI checks.
+- Docker, Compose, Prometheus, and Grafana assets are committed for local deployment and monitoring. GitHub Actions workflows publish the static dashboard and run CI checks.
 
 Scope summary:
 
@@ -102,9 +102,9 @@ Scope summary:
 | Online serving | Classical LSTM only |
 | Offline forecast serving | `normal` and `quant` materialized rows |
 | Promotion policy | `models/serving_promotions.json` |
-| Current promoted extraction date | `2026-05-19` |
-| Current promoted training run | `20260525T131034Z` |
-| Current forecast package | `data/processed/future_predict`, generated at `20260525T143920Z` |
+Current promoted extraction date | `2026-05-19` (See `serving_promotions.json`) |
+Current promoted training run | `20260525T131034Z` |
+Current forecast package | `data/processed/future_predict` |
 
 ---
 
@@ -138,11 +138,20 @@ The current repository layout is:
 
 ```text
 tech-challenge-phase4/
++-- .github/
+|   `-- workflows/
+|       +-- ci.yml
+|       `-- pages.yml
 +-- Docs/
-|   `-- 2026-05-05-final-audit-report.md
+|   +-- 2026-05-05-final-audit-report.md
+|   +-- 2026-05-25-dashboard-data-exposure-validation.md
+|   `-- 2026-05-25-forecast-quality-realized-audit.md
 +-- data/
 |   +-- raw/
 |   `-- processed/
++-- monitoring/
+|   +-- prometheus.yml
+|   `-- grafana/
 +-- models/
 |   +-- manifests/
 |   +-- training_runs/
@@ -159,10 +168,12 @@ tech-challenge-phase4/
 |   +-- train_model_quantum.py
 |   +-- train_and_compare_models.py
 |   +-- generate_forecast.py
+|   +-- forecast_quality_audit.py
 |   +-- provision_athena.py
 |   +-- backfill_model_artifact_references.py
 |   +-- run_front.py
 |   `-- test_ibm_quantum.py
++-- site/
 +-- src/
 |   +-- api/
 |   +-- application/
@@ -171,8 +182,11 @@ tech-challenge-phase4/
 |   `-- infrastructure/
 +-- tests/
 |   +-- test_api_endpoints.py
+|   +-- test_front_dashboard.py
 |   `-- test_news_aggregator_service.py
 +-- ARCHITECTURE.md
++-- Dockerfile
++-- docker-compose.yml
 +-- requirements.txt
 +-- requirements-dev.txt
 `-- README.md
@@ -311,12 +325,21 @@ python scripts/train_keras.py --skip-s3
 python scripts/train_keras.py --extraction-date 2026-04-22 --symbols NVDA AMD TSM ASML QCOM --verbose 0
 ```
 
+Optional temporal cross-validation:
+
+```bash
+python scripts/train_keras.py --skip-s3 --cross-validation-folds 3 --verbose 0
+```
+
+Cross-validation uses expanding temporal windows over `train + validation` only. The `test` split remains untouched as the final holdout. Results are written to each run directory as `cross_validation.json` and summarized in `training_report.md`.
+
 Training outputs:
 
 - immutable artifacts under `models/training_runs/...`
 - training manifests under `models/manifests/extraction_date=<date>/trained_at=<timestamp>/keras_training_manifest.json`
 - published convenience aliases under `models/lstm_*.keras`
 - return-target runs use `models/lstm_return_*.keras` and are supported by the current serving policy when explicitly promoted
+- optional cross-validation summaries under `models/training_runs/.../cross_validation.json`
 
 ### 5. Generate future forecasts
 
@@ -380,6 +403,15 @@ This script annotates historical manifests with:
 ---
 
 ## Quantum Benchmark Strategy
+
+### Quick Comparison (Current Snapshot)
+| Metric | Classical LSTM (D+1) | Quantum VQC (Directional) |
+|---|---|---|
+| MSE / Accuracy | ~0.002 (MSE) | 52% (Accuracy) |
+| Training Time | < 2 min | ~15 min (Simulator) |
+| Inference | Instant | QPU-bound (Minutes) |
+
+*Note: Quantum path is experimental. Performance focus is on directional bias rather than price regression.*
 
 The project treats the quantum path as an experimental benchmark, not as a production replacement for the classical LSTM. The intended comparison has three layers:
 
@@ -557,6 +589,8 @@ Current regression coverage includes:
 - FastAPI endpoint alignment tests for `/predict`, `/forecasts/{symbol}`, `/health`, `/methods`, and `/data-usage`
 - offline fallback tests for `/predict/enriched` and `/news/{symbol}`
 - news deduplication regression tests for timezone-aware and missing timestamps
+- dashboard forecast-row display tests for optional fields and `normal`/`quant` classification
+- temporal cross-validation fold generation tests for expanding-window training validation
 
 ### Forecast quality audit
 
@@ -594,21 +628,47 @@ The repository includes:
 
 ## Deployment
 
-Container, compose, Prometheus, and Grafana assets are not committed today.
+The repository includes local container and monitoring assets:
+
+- `Dockerfile`
+- `docker-compose.yml`
+- `monitoring/prometheus.yml`
+- `monitoring/grafana/provisioning/`
+- `monitoring/grafana/dashboards/tech-challenge-api.json`
+
+Run the monitored stack locally:
+
+```bash
+docker compose up --build
+```
+
+Useful URLs:
+
+| Service | URL |
+|---|---|
+| API | http://localhost:8000 |
+| API metrics | http://localhost:8000/metrics |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 |
+
+Default Grafana credentials for the local compose stack are `admin` / `admin`.
 
 The supported execution model in this repository is:
 
 - local virtualenv for API and frontend
+- Docker Compose for API, Prometheus, and Grafana
 - filesystem-backed raw, processed, and model artifacts
 - optional S3 and Athena publication through the provided scripts
 
-If containerization is added later, it must include:
+The compose stack mounts these directories into the API container as read-only volumes:
 
 - `data/`
 - `models/`
 - `.env`
 - `models/serving_promotions.json`
 - immutable `models/training_runs/...` artifacts referenced by the promotion policy
+
+Dashboard exposure validation is documented in [Docs/2026-05-25-dashboard-data-exposure-validation.md](Docs/2026-05-25-dashboard-data-exposure-validation.md).
 
 ---
 
