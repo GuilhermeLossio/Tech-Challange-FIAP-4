@@ -179,7 +179,8 @@ def _select_index_symbol(symbols: tuple[str, ...]) -> str:
 
 
 def _rewrite_links(html: str) -> str:
-    html = html.replace('href="/static/app.css"', 'href="static/app.css"')
+    html = html.replace('href="/static/', 'href="static/')
+    html = html.replace('src="/static/', 'src="static/')
     html = html.replace('action="/"', 'action="index.html"')
     html = re.sub(
         r'href="/\?([^"]+)"',

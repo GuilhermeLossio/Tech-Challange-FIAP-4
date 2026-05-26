@@ -84,16 +84,14 @@ a {
   min-width: 0;
 }
 
-.sd-brand-icon {
-  display: grid;
-  place-items: center;
-  min-width: 1.85rem;
-  min-height: 1.85rem;
-  background: rgba(255, 255, 255, 0.2);
-  padding: 0.5rem;
+.sd-brand-logo {
+  width: 2.375rem;
+  height: 2.375rem;
+  flex: 0 0 2.375rem;
+  display: block;
   border-radius: var(--radius-sm);
-  font-weight: 800;
-  letter-spacing: 1px;
+  object-fit: cover;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.22);
 }
 
 .sd-brand-name {

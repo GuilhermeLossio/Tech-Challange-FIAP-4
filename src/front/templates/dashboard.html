@@ -5,13 +5,22 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ front_title }}</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-256.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body>
     <div class="sd-app">
       <div class="sd-topbar">
         <div class="sd-brand">
-          <div class="sd-brand-icon">SD</div>
+          <img
+            class="sd-brand-logo"
+            src="{{ url_for('static', filename='brand-logo-header.png') }}"
+            alt=""
+            width="38"
+            height="38"
+            aria-hidden="true"
+          >
           <div>
             <div class="sd-brand-name">Signal Deck</div>
             <div class="sd-brand-sub">Semiconductor Forecast</div>
